@@ -161,7 +161,8 @@ Cache hanya dipakai untuk pertanyaan tanpa riwayat (`history` kosong), karena ja
 |---|---|
 | XSS dari pesan user | Dirender dengan `textContent` |
 | XSS dari jawaban model | Markdown dirender `marked`, lalu disanitasi `DOMPurify` (whitelist tag/atribut) |
-| XSS dari nama file sumber | `escapeHtml()` per nama file (diuji dengan nama file `<img src=x onerror=...>`) |
+| XSS dari nama file sumber | `escapeHtml()` untuk teks link dan `encodeURIComponent()` untuk URL-nya (diuji dengan nama file `<img src=x onerror=...>` dan `x" onmouseover="...`) |
+| Membuka dokumen knowledge base | `GET /knowledge-base/{filename}` wajib login; hanya nama file tanpa path, ekstensi `.md`/`.txt`/`.pdf`, dan path akhir harus di dalam folder knowledge base; `.md`/`.txt` disajikan `text/plain` + `X-Content-Type-Options: nosniff` agar isi file tidak dijalankan sebagai HTML |
 | Library dari CDN | `marked` dan `DOMPurify` disajikan lokal dari `/static/vendor` |
 | Path traversal saat upload | `os.path.basename()` pada nama file |
 | Tipe file berbahaya | Validasi ekstensi di server (`.md`, `.txt`, `.pdf`) |

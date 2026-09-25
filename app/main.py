@@ -19,7 +19,7 @@ import httpx
 import psycopg
 import redis
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langfuse import Langfuse
@@ -426,6 +426,41 @@ def chat_page(request: Request):
     if user is None:
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request, "chat.html", {"user": user})
+
+
+# Tipe konten saat dokumen knowledge base dibuka di browser. .md dan .txt sengaja disajikan sebagai
+# text/plain (bukan text/html/markdown yang dirender) agar isi file hasil upload tidak pernah
+# dijalankan sebagai HTML/script oleh browser.
+KNOWLEDGE_BASE_MEDIA_TYPES = {
+    ".md": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".pdf": "application/pdf",
+}
+
+
+@app.get("/knowledge-base/{filename}")
+def knowledge_base_document(request: Request, filename: str):
+    """GET /knowledge-base/{filename} - open one knowledge base document in the browser (login required); used by the source links in agent answers."""
+    user = get_current_user(request)
+    if user is None:
+        return RedirectResponse("/login", status_code=303)
+    # Hanya nama file (tanpa komponen path) dengan ekstensi yang didukung, dan path akhirnya harus
+    # tetap berada di dalam folder knowledge base (mencegah path traversal seperti "../").
+    name = os.path.basename(filename)
+    media_type = KNOWLEDGE_BASE_MEDIA_TYPES.get(os.path.splitext(name)[1].lower())
+    base_dir = os.path.realpath(KNOWLEDGE_BASE_PATH)
+    path = os.path.realpath(os.path.join(base_dir, name))
+    if name != filename or media_type is None or os.path.dirname(path) != base_dir or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan di knowledge base.")
+    # content_disposition_type="inline": dibuka di tab browser, bukan diunduh. nosniff mencegah
+    # browser menebak tipe konten lain (mis. menafsirkan .txt sebagai HTML).
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=name,
+        content_disposition_type="inline",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/upload", response_class=HTMLResponse)

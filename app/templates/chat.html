@@ -225,11 +225,19 @@
             return html ? `<div class="tool-badges">${html}</div>` : "";
         }
 
-        // Lampiran dokumen sumber jawaban mode agent (field sources response /chat). Nama file berasal
-        // dari upload user, jadi WAJIB di-escape sebelum masuk innerHTML (cegah XSS).
+        // Lampiran dokumen sumber jawaban mode agent (field sources response /chat). Tiap nama file jadi
+        // link ke GET /knowledge-base/{nama} (dibuka di tab baru). Nama file berasal dari upload user:
+        // teks link WAJIB di-escape (cegah XSS) dan URL-nya di-encode (spasi, #, ?, dsb.).
+        // "(tanpa nama)" = chunk tanpa metadata source, jadi tidak ada file yang bisa dibuka.
         function sourcesHtml(sources) {
             if (!sources || sources.length === 0) return "";
-            const items = sources.map((name) => `<li>${escapeHtml(name)}</li>`).join("");
+            const items = sources
+                .map((name) => {
+                    if (name === "(tanpa nama)") return `<li>${escapeHtml(name)}</li>`;
+                    const href = `/knowledge-base/${encodeURIComponent(name)}`;
+                    return `<li><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="Buka dokumen di tab baru">${escapeHtml(name)}</a></li>`;
+                })
+                .join("");
             return `<div class="sources"><div class="sources-title">Sumber dokumen</div><ul>${items}</ul></div>`;
         }
 

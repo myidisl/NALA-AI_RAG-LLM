@@ -1439,6 +1439,18 @@ input:disabled {
     color: var(--text-muted);
 }
 
+/* Nama dokumen sumber berupa link ke /knowledge-base/{nama}; warna aksen agar jelas bisa diklik */
+.nala .sources a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+}
+
+.nala .sources a:hover {
+    color: var(--coral-dark);
+}
+
 /* ---------- Module 29: layar sempit (≤ 480px) ----------
    Hanya berlaku di bawah 480px; tampilan default tidak berubah. Layout NALA memakai .app satu layar
    penuh (body tanpa margin), jadi "margin/padding body" di sini = padding top bar, #history, dan composer. */

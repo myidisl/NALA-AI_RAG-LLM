@@ -176,6 +176,7 @@ Semua endpoint selain `/health`, `/login`, dan `/static/*` **wajib login**. Hala
 | GET | `/` | ✅ | – | Halaman chat |
 | POST | `/chat/stream` | ✅ (401) | `chat` 20/menit | Chat RAG streaming |
 | POST | `/chat` | ✅ (401) | `chat` 20/menit | Mode agent |
+| GET | `/knowledge-base/{filename}` | ✅ | – | Membuka dokumen knowledge base di browser (link lampiran sumber); `.md`/`.txt` sebagai `text/plain`, `.pdf` inline; file tidak ada / ekstensi lain / path traversal → 404 |
 | GET | `/upload` | ✅ | – | Halaman knowledge base |
 | POST | `/upload` | ✅ | `upload` 5/menit | Simpan file + enqueue ingest |
 | GET | `/data-operasional` | ✅ | – | Form & tabel data operasional (`?kredit_page=&klaim_page=`) |
@@ -251,7 +252,7 @@ Rate limit dihitung **sebelum** pemeriksaan login dan per IP (lihat §9). Melebi
 |---|---|
 | `reply` | Jawaban akhir agent (Markdown) |
 | `tool_used` | `"rag"`, `"sql"`, `"mixed"` (keduanya), `"none"`, atau `"cache"`. Hanya tool yang **diizinkan** RBAC yang dihitung |
-| `sources` | Nama file dokumen hasil `cari_dokumen_sop` (tanpa duplikat, urutan kemunculan). Kosong untuk jawaban dari cache |
+| `sources` | Nama file dokumen hasil `cari_dokumen_sop` (tanpa duplikat, urutan kemunculan). Kosong untuk jawaban dari cache. UI menampilkannya sebagai link ke `/knowledge-base/{nama}` |
 
 **Pemrosesan:**
 1. Rate limit → sesi (`401` bila tidak ada).
@@ -454,7 +455,7 @@ Rincian ada di [keamanan-rbac-audit.md](./keamanan-rbac-audit.md).
 - Pesan berupa bubble (`.msg-row > .bubble`): user di kanan, NALA di kiri dengan avatar yang berdenyut saat menunggu.
 - Typing indicator tiga titik sebelum token pertama; kursor berkedip selama streaming.
 - Balasan dirender sebagai Markdown (`marked`) lalu disanitasi (`DOMPurify`).
-- Mode agent: badge sumber jawaban (📄 Dokumen SOP, 🗄️ Data operasional, ⚡ Dari cache) dan daftar **Sumber dokumen**.
+- Mode agent: badge sumber jawaban (📄 Dokumen SOP, 🗄️ Data operasional, ⚡ Dari cache) dan daftar **Sumber dokumen** berupa link yang membuka dokumen di tab baru.
 - Saat mode agent aktif, switch retrieval dinonaktifkan (tetap terlihat).
 - Tema gelap otomatis mengikuti preferensi OS/browser; tema terang tetap default.
 - Responsif: breakpoint 600px dan 480px (kontrol composer menjadi satu kolom).

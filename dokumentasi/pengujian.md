@@ -123,6 +123,8 @@ Fungsi `app/cache.py`: miss → `None`, hit → jawaban, TTL sesuai `CACHE_TTL_S
 | SOP + SQL | `mixed` | `rag` |
 | Tanpa tool | `none` | `none` |
 
+Link sumber `GET /knowledge-base/{filename}`: tanpa login → 303 `/login`; `.md`/`.txt` → 200 `text/plain` inline + `nosniff`; `.pdf` → 200 `application/pdf` inline; nama berisi spasi/`#` → 200; ekstensi lain, file tidak ada, `..%2F`, `%2e%2e%2F`, `sub%2F`, `..%5C` → 404 ✅. Di UI, nama file jadi link (URL di-encode, teks di-escape, `(tanpa nama)` tanpa link) ✅.
+
 `rag_search()` mengembalikan tuple di ketiga jalur (normal, kosong, error) ✅; sumber tanpa duplikat, `metadata` tanpa `source` menjadi `(tanpa nama)` ✅; nama file `<img src=x onerror=...>.md` tampil sebagai teks, 0 elemen `<img>` terbentuk ✅.
 
 ### 2.9 Tampilan

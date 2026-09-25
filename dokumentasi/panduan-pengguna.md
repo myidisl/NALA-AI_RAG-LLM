@@ -50,7 +50,7 @@ Saat **Pakai Agent** aktif, switch pencarian di atasnya diredupkan karena agent 
 
 Jawaban mode agent dilengkapi:
 
-- **Sumber dokumen** — daftar file SOP yang dipakai sebagai rujukan.
+- **Sumber dokumen** — daftar file SOP yang dipakai sebagai rujukan. Klik nama file untuk membuka dokumennya di tab baru (Markdown/teks tampil sebagai teks biasa, PDF tampil di penampil PDF browser).
 - **Badge**:
   - 📄 **Dokumen SOP** — jawaban memakai pencarian dokumen.
   - 🗄️ **Data operasional** — jawaban memakai data dari database.
