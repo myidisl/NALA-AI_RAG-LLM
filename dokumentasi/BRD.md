@@ -1,8 +1,9 @@
 # Business Requirements Document (BRD) — NALA
 
 **Nama Proyek:** NALA (*Not Another Lowkey Assistant*)
-**Versi Dokumen:** 2.1
-**Tanggal:** 2026-09-24
+**Organisasi:** PT Nusantara Finance (studi kasus)
+**Versi Dokumen:** 3.0
+**Tanggal:** 2026-09-25
 **Status:** Draft — beberapa bagian berisi asumsi yang perlu dikonfirmasi *business owner* (ditandai ⚠)
 
 **Riwayat Perubahan:**
@@ -12,14 +13,23 @@
 | 1.0 | 2026-09-23 | MVP asisten tanya-jawab teknologi umum |
 | 2.0 | 2026-09-24 | Fokus ke pegawai perbankan; tanya-jawab berbasis dokumen SOP internal (RAG); upload knowledge base; pipeline ingest |
 | 2.1 | 2026-09-24 | FR-02, FR-18, NFR-02, NFR-10 terpenuhi (streaming real-time, folder knowledge base persisten & seragam) |
+| 3.0 | 2026-09-25 | Kualitas retrieval (BM25, hybrid, reranking, evaluasi); data operasional & mode agent; login, RBAC, dan audit log; cache, antrian ingest, rate limiting; observability; pembaruan UI. FR-20 dan NFR-11 terpenuhi; FR-24 s.d. FR-40 ditambahkan |
+
+> Dokumen terkait: [Spesifikasi Teknis](./spesifikasi.md) · [Keamanan, RBAC & Audit](./keamanan-rbac-audit.md) · [Panduan Pengguna](./panduan-pengguna.md) · [Riwayat Pengembangan](./riwayat-pengembangan.md)
 
 ---
 
 ## 1. Latar Belakang
 
-Pegawai bank setiap hari membutuhkan jawaban cepat atas dua jenis pertanyaan: **pertanyaan teknologi** (aplikasi kantor, perangkat, sistem perbankan digital, keamanan informasi) dan **pertanyaan prosedur** yang tersebar di banyak dokumen SOP internal. Mencari prosedur secara manual di banyak dokumen memakan waktu, sementara asisten AI berbasis cloud menimbulkan dua hambatan: **biaya berlangganan per token** dan **risiko kerahasiaan data**, karena pertanyaan dan dokumen internal dikirim ke server pihak ketiga.
+Pegawai bank setiap hari membutuhkan jawaban cepat atas tiga jenis pertanyaan:
 
-NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang berjalan **sepenuhnya di infrastruktur sendiri** (Ollama sebagai runtime model lokal, OpenSearch sebagai penyimpan dokumen) dan mampu menjawab **berdasarkan isi dokumen SOP internal** yang diunggah ke knowledge base.
+1. **Pertanyaan teknologi** — aplikasi kantor, perangkat, sistem perbankan digital, keamanan informasi.
+2. **Pertanyaan prosedur** — tersebar di banyak dokumen SOP internal (kredit, layanan, firewall, pengadaan, dsb.).
+3. **Pertanyaan data operasional** — status dan jumlah pengajuan kredit atau klaim asuransi, termasuk data nasabah tertentu.
+
+Mencari prosedur dan data secara manual memakan waktu, sementara asisten AI berbasis cloud menimbulkan dua hambatan: **biaya per token** dan **risiko kerahasiaan data**. Selain itu, data nasabah tidak boleh dapat diakses semua pegawai — akses harus mengikuti peran dan dapat diaudit.
+
+NALA menjawab kebutuhan tersebut: asisten AI yang berjalan **sepenuhnya di infrastruktur sendiri**, menjawab berdasarkan **dokumen SOP internal** dan **data operasional**, dengan **login, pembatasan akses per peran, dan jejak audit**.
 
 ---
 
@@ -27,12 +37,15 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | No | Tujuan | Indikator Keberhasilan ⚠ |
 |---|---|---|
-| B-1 | Menyediakan akses tanya-jawab teknologi yang cepat dan mudah dipahami lintas peran pegawai bank | Pegawai memperoleh jawaban relevan tanpa perlu berpindah ke mesin pencari |
+| B-1 | Menyediakan akses tanya-jawab teknologi yang cepat dan mudah dipahami | Pegawai memperoleh jawaban relevan tanpa berpindah ke mesin pencari |
 | B-2 | Mempercepat akses ke prosedur internal (SOP) | Pertanyaan prosedur dijawab dengan merujuk dokumen SOP sumbernya |
-| B-3 | Menjaga kerahasiaan data percakapan dan dokumen internal | 0% data percakapan maupun dokumen keluar dari jaringan internal |
+| B-3 | Menjaga kerahasiaan data percakapan, dokumen, dan data nasabah | 0% data keluar dari jaringan internal |
 | B-4 | Menekan biaya operasional asisten AI | Tidak ada biaya per-token; biaya terbatas pada infrastruktur server |
-| B-5 | Knowledge base dapat diperbarui tanpa melibatkan tim pengembang | Dokumen SOP baru dapat diunggah lewat antarmuka web dan langsung dapat ditanyakan |
-| B-6 | Menyediakan fondasi teknis yang dapat dikembangkan untuk kebutuhan internal lain | Arsitektur modular; penggantian model cukup lewat *environment variable* |
+| B-5 | Knowledge base dapat diperbarui tanpa tim pengembang | Dokumen baru diunggah lewat web dan dapat ditanyakan setelah proses background selesai |
+| B-6 | Fondasi teknis yang dapat dikembangkan | Arsitektur modular; model, endpoint, dan batas dikonfigurasi lewat *environment variable* |
+| B-7 | Menyediakan jawaban atas data operasional secara aman | Staf berwenang mendapat angka/status transaksi lewat chat; staf tidak berwenang ditolak |
+| B-8 | Memastikan akses data dapat dipertanggungjawabkan | Setiap pertanyaan mode agent tercatat (siapa, role, tool, diizinkan/ditolak) |
+| B-9 | Menjaga layanan tetap stabil saat beban naik | Pertanyaan berulang dijawab dari cache; request berlebihan dibatasi; ingest tidak memblokir pengguna |
 
 ---
 
@@ -40,28 +53,30 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 ### 3.1 Termasuk dalam Lingkup (In Scope)
 
-- Antarmuka web chat berbasis browser
-- Tanya-jawab seputar teknologi dan teknologi perbankan
-- Tanya-jawab berbasis dokumen SOP internal (RAG), dengan opsi mematikan pencarian dokumen per pertanyaan
-- Halaman Knowledge Base: upload dokumen `.md`, `.txt`, `.pdf` dan daftar dokumen tersimpan
-- Pipeline ingest dokumen (otomatis saat upload, dan manual melalui Airflow)
-- Balasan streaming
-- Konteks percakapan multi-giliran (10 pesan terakhir)
-- Reset percakapan
+- Login berbasis sesi dengan akun demo per role; logout
+- Antarmuka web chat (bubble, streaming, Markdown, tema gelap, responsif)
+- Tanya-jawab teknologi dan SOP (RAG) dengan pilihan metode pencarian (BM25 / Vector / Hybrid) dan reranking
+- **Mode Agent**: model memilih sendiri tool dokumen SOP atau data operasional; badge tool dan lampiran dokumen sumber
+- **RBAC** akses data operasional per role, ditegakkan saat eksekusi tool
+- **Audit log** setiap pertanyaan mode agent
+- Halaman Knowledge Base: upload `.md`, `.txt`, `.pdf`; ingest di background (antrian RQ); daftar dokumen
+- Pipeline ingest ulang seluruh folder lewat Airflow (manual)
+- Halaman Data Operasional: input dan daftar pengajuan kredit & klaim asuransi
+- Cache jawaban (Redis) dan rate limiting per IP
+- Observability (Langfuse) dan evaluasi kualitas retrieval
+- GUI admin pengembangan: OpenSearch Dashboards, Adminer, RedisInsight, Airflow, Langfuse
 - Deployment melalui Docker Compose
-- Health check endpoint untuk monitoring
 
 ### 3.2 Tidak Termasuk dalam Lingkup (Out of Scope)
 
-- Autentikasi dan manajemen pengguna/hak akses
+- Manajemen pengguna sungguhan (registrasi, ganti password, integrasi SSO/LDAP) — akun masih demo
 - Penyimpanan permanen riwayat percakapan
-- Pertanyaan di luar topik teknologi dan SOP (secara eksplisit ditolak oleh sistem)
-- Pemrosesan data nasabah atau kredensial (nomor rekening, PIN, password, OTP)
+- Pembatasan akses **dokumen SOP** per role (RBAC saat ini hanya untuk data operasional)
+- Pengelolaan dokumen lanjutan (hapus, versi, persetujuan)
+- Ubah/hapus data operasional dari UI (hanya tambah & lihat)
 - OCR untuk dokumen hasil scan
-- Pengelolaan dokumen lanjutan (hapus, versi, persetujuan dokumen)
-- Aplikasi mobile native
-- Integrasi dengan sistem internal lain (core banking, ticketing, dsb.)
-- Dukungan suara (*voice input/output*)
+- Integrasi dengan sistem inti (core banking, ticketing)
+- Aplikasi mobile native dan dukungan suara
 
 ---
 
@@ -69,24 +84,27 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | Peran | Tanggung Jawab |
 |---|---|
-| *Business Owner* | Menetapkan tujuan, cakupan, dan prioritas pengembangan |
-| Pemilik Dokumen SOP / Unit Kepatuhan | Menyediakan dan memastikan dokumen SOP di knowledge base valid dan terbaru |
-| Tim Pengembang | Implementasi, pemeliharaan, dan deployment aplikasi |
-| Tim Infrastruktur / IT Ops | Penyediaan server, kapasitas komputasi, OpenSearch, Airflow, dan monitoring |
-| Tim Keamanan Informasi | Menilai risiko akses, kerahasiaan dokumen, dan kepatuhan |
-| Pengguna Akhir | Pegawai bank: frontliner, staf operasional, marketing/sales, analis, manajemen, tim IT |
+| *Business Owner* | Menetapkan tujuan, cakupan, prioritas |
+| Pemilik Dokumen SOP / Unit Kepatuhan | Menjamin dokumen knowledge base valid, terbaru, dan tidak saling bertentangan |
+| Divisi Kredit & Asuransi | Pemilik data operasional; menentukan siapa boleh mengakses |
+| Tim Keamanan Informasi / Audit Intern | Menetapkan kebijakan akses, meninjau audit log |
+| Tim Pengembang | Implementasi, pemeliharaan, deployment |
+| Tim Infrastruktur / IT Ops | Server, kapasitas (CPU/GPU/RAM), monitoring layanan pendukung |
+| Pengguna Akhir | Pegawai: staf umum, staf finance, supervisor, tim NetSec |
 
 ---
 
-## 5. Persona Pengguna
+## 5. Persona & Role Pengguna
 
-| Persona | Karakteristik | Kebutuhan Utama |
-|---|---|---|
-| **Frontliner** (teller, customer service) | Berinteraksi langsung dengan nasabah, butuh jawaban cepat | Langkah prosedur layanan yang ringkas dan merujuk SOP |
-| **Staf Operasional / Back Office** | Menjalankan proses rutin sesuai SOP | Rincian prosedur, syarat dokumen, dan alur persetujuan |
-| **Marketing / Sales & Analis** | Mengolah data dan menyiapkan materi | Bantuan aplikasi kantor, pengolahan data, otomasi pekerjaan |
-| **Manajemen** | Perlu gambaran ringkas | Penjelasan konsep teknologi perbankan dengan bahasa sederhana |
-| **Tim IT Bank** | Mengelola infrastruktur (mis. firewall) | Referensi SOP teknis dan jawaban akurat dengan pengakuan jujur saat model tidak yakin |
+| Persona | Role sistem | Akun demo | Akses data operasional | SOP paling relevan |
+|---|---|---|---|---|
+| Staf Umum / General Affairs | `staff_umum` | `budi.umum` | ❌ | Pengadaan Barang & Jasa, Pengelolaan Aset Umum, Pengaduan Nasabah |
+| Staf Finance / Kredit | `staff_finance` | `sari.finance` | ✅ | SOP kredit (pengajuan, UMKM, Multiguna, KKB, KPR, penagihan, pelunasan), klaim asuransi, APU-PPT |
+| Supervisor | `supervisor` | `andi.super` | ✅ | Seluruh SOP bisnis, terutama limit kewenangan |
+| Staf Network Security | `staff_netsec` | `thoriq.netsec` | ❌ | 8 SOP firewall, POJK 11/2022, SEOJK 29/2022 |
+| Supervisor Network Security | `spv_netsec` | `zein.netsec` | ❌ | Sama dengan staf NetSec, fokus persetujuan change request & resertifikasi |
+
+Semua akun demo memakai password `nala123` (khusus pengembangan).
 
 ---
 
@@ -95,28 +113,45 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 | ID | Kebutuhan | Prioritas | Status |
 |---|---|---|---|
 | FR-01 | Pengguna dapat mengirim pertanyaan melalui antarmuka web | Wajib | ✅ Selesai |
-| FR-02 | Sistem menampilkan jawaban secara bertahap (streaming) tanpa menunggu balasan penuh | Wajib | ✅ Selesai |
-| FR-03 | Sistem mempertahankan konteks percakapan sebelumnya saat menjawab | Wajib | ✅ Selesai |
-| FR-04 | Sistem membatasi konteks pada 10 pesan terakhir demi menjaga performa | Wajib | ✅ Selesai |
-| FR-05 | Pengguna mendapat informasi jumlah pesan dan pemberitahuan saat konteks mulai dipangkas | Sedang | ✅ Selesai |
-| FR-06 | Pengguna dapat mereset percakapan dengan konfirmasi terlebih dahulu | Sedang | ✅ Selesai |
-| FR-07 | Sistem menolak request yang tidak valid dengan pesan error yang jelas | Wajib | ✅ Selesai (sisi API) |
-| FR-08 | Sistem menyediakan endpoint health check | Sedang | ✅ Selesai |
-| FR-09 | Jawaban mengikuti persona yang ditetapkan (ramah, gaya Gen-Z, ditutup pantun) | Sedang | ✅ Selesai |
-| FR-10 | Sistem menolak menjawab pertanyaan di luar lingkup teknologi dan SOP | Wajib | ✅ Selesai |
-| FR-11 | Model dan alamat server dapat dikonfigurasi tanpa mengubah kode | Wajib | ✅ Selesai |
-| FR-12 | Sistem menampilkan pesan error yang ramah di UI saat backend gagal merespons | Wajib | ⚠ Sebagian — error HTTP/jaringan sudah tampil; error dari Ollama (mis. model belum di-*pull*) masih menghasilkan balasan kosong |
-| FR-13 | Sistem menjawab pertanyaan prosedur berdasarkan dokumen SOP di knowledge base (RAG) | Wajib | ✅ Selesai |
-| FR-14 | Pengguna dapat mengaktifkan/menonaktifkan pencarian dokumen per pertanyaan | Sedang | ✅ Selesai |
-| FR-15 | Pengguna dapat mengunggah dokumen `.md`, `.txt`, `.pdf` ke knowledge base dan dokumen langsung dapat ditanyakan | Wajib | ✅ Selesai |
-| FR-16 | Pengguna dapat melihat daftar dokumen yang ada di knowledge base | Sedang | ✅ Selesai |
-| FR-17 | Chat tetap berfungsi (tanpa konteks dokumen) bila layanan pencarian dokumen tidak tersedia | Wajib | ✅ Selesai |
-| FR-18 | Seluruh folder knowledge base dapat di-*ingest* ulang melalui pipeline terjadwal/manual | Sedang | ✅ Selesai (manual via DAG Airflow; belum terjadwal) |
-| FR-19 | Sistem mengingatkan pengguna untuk tidak membagikan data rahasia nasabah/kredensial | Wajib | ✅ Selesai (melalui system prompt) |
-| FR-20 | Jawaban mencantumkan dokumen sumber yang dirujuk | Sedang | ❌ Belum — label sumber hanya dikirim ke model, tidak ditampilkan di UI |
-| FR-21 | Pengguna dapat menghapus/memperbarui dokumen di knowledge base | Sedang | ❌ Belum |
-| FR-22 | Riwayat percakapan tersimpan dan dapat dibuka kembali setelah halaman ditutup | Rendah | ❌ Belum |
-| FR-23 | Pengguna dapat memilih model yang digunakan dari antarmuka | Rendah | ❌ Belum |
+| FR-02 | Jawaban tampil bertahap (streaming) | Wajib | ✅ Selesai (mode chat) |
+| FR-03 | Sistem mempertahankan konteks percakapan | Wajib | ✅ Selesai (kedua mode) |
+| FR-04 | Konteks dibatasi 10 pesan terakhir | Wajib | ✅ Selesai |
+| FR-05 | Info jumlah pesan dan pemberitahuan pemangkasan konteks | Sedang | ✅ Selesai |
+| FR-06 | Reset percakapan dengan konfirmasi | Sedang | ✅ Selesai |
+| FR-07 | Request tidak valid ditolak dengan pesan jelas | Wajib | ✅ Selesai |
+| FR-08 | Endpoint health check | Sedang | ✅ Selesai |
+| FR-09 | Jawaban mengikuti persona NALA | Sedang | ✅ Selesai |
+| FR-10 | Menolak pertanyaan di luar lingkup | Wajib | ✅ Selesai |
+| FR-11 | Model dan alamat server dapat dikonfigurasi tanpa ubah kode | Wajib | ✅ Selesai |
+| FR-12 | Pesan error ramah di UI saat backend gagal | Wajib | ⚠ Sebagian — error HTTP/jaringan tampil; error internal Ollama saat streaming masih menghasilkan balasan kosong |
+| FR-13 | Menjawab pertanyaan prosedur berdasarkan SOP (RAG) | Wajib | ✅ Selesai |
+| FR-14 | RAG dapat diaktifkan/dinonaktifkan per pertanyaan | Sedang | ✅ Selesai |
+| FR-15 | Upload `.md`, `.txt`, `.pdf` ke knowledge base | Wajib | ✅ Selesai (ingest di background) |
+| FR-16 | Melihat daftar dokumen knowledge base | Sedang | ✅ Selesai |
+| FR-17 | Chat tetap berfungsi tanpa konteks bila pencarian dokumen gagal | Wajib | ✅ Selesai |
+| FR-18 | Ingest ulang seluruh folder lewat pipeline | Sedang | ✅ Selesai (manual via Airflow; belum terjadwal) |
+| FR-19 | Mengingatkan pengguna tidak membagikan data rahasia | Wajib | ✅ Selesai (system prompt) |
+| FR-20 | Jawaban mencantumkan dokumen sumber | Sedang | ✅ Selesai untuk mode Agent (lampiran "Sumber dokumen"); mode chat belum |
+| FR-21 | Hapus/perbarui dokumen di knowledge base | Sedang | ❌ Belum |
+| FR-22 | Riwayat percakapan tersimpan permanen | Rendah | ❌ Belum |
+| FR-23 | Memilih model dari antarmuka | Rendah | ❌ Belum |
+| FR-24 | Memilih metode pencarian (BM25 / Vector / Hybrid) dari UI | Sedang | ✅ Selesai |
+| FR-25 | Mengaktifkan reranking hasil pencarian | Sedang | ✅ Selesai |
+| FR-26 | Login dan logout; semua halaman wajib login | Wajib | ✅ Selesai (akun demo) |
+| FR-27 | Identitas pengguna ditampilkan (nama & role) | Rendah | ✅ Selesai |
+| FR-28 | Menjawab pertanyaan data operasional (jumlah per status, detail nasabah) | Wajib | ✅ Selesai (mode Agent) |
+| FR-29 | Akses data operasional dibatasi per role | Wajib | ✅ Selesai (`staff_finance`, `supervisor`) |
+| FR-30 | Setiap pertanyaan mode Agent tercatat di audit log | Wajib | ✅ Selesai |
+| FR-31 | Pengguna melihat tool yang dipakai (badge) | Sedang | ✅ Selesai |
+| FR-32 | Input data pengajuan kredit & klaim asuransi lewat web | Sedang | ✅ Selesai |
+| FR-33 | Daftar data operasional berpaginasi | Rendah | ✅ Selesai |
+| FR-34 | Pertanyaan berulang dijawab dari cache | Sedang | ✅ Selesai (mode Agent, tanpa riwayat) |
+| FR-35 | Cache dikosongkan setelah dokumen baru selesai di-ingest | Sedang | ✅ Selesai |
+| FR-36 | Pembatasan jumlah request per menit | Sedang | ✅ Selesai (per IP) |
+| FR-37 | Upload tidak menunggu proses ingest | Sedang | ✅ Selesai (job ID ditampilkan) |
+| FR-38 | Tema gelap | Rendah | ✅ Selesai (mengikuti OS/browser) |
+| FR-39 | Tampilan nyaman di ponsel | Sedang | ✅ Selesai (breakpoint 600px & 480px) |
+| FR-40 | Pembatasan akses dokumen SOP per role | Rendah | ❌ Belum |
 
 ---
 
@@ -124,44 +159,66 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | ID | Kategori | Kebutuhan | Status |
 |---|---|---|---|
-| NFR-01 | Privasi | Seluruh pemrosesan (LLM, embedding, penyimpanan dokumen) berjalan di infrastruktur internal | ✅ Terpenuhi |
-| NFR-02 | Responsivitas | Token pertama jawaban mulai tampil sesegera mungkin melalui mekanisme streaming | ✅ Terpenuhi |
-| NFR-03 | Keamanan | Seluruh input pengguna dan output model di-*escape* sebelum ditampilkan untuk mencegah XSS | ✅ Terpenuhi |
-| NFR-04 | Keamanan Upload | Nama file disanitasi dan ekstensi divalidasi di server | ✅ Terpenuhi |
-| NFR-05 | Portabilitas | Aplikasi dapat dijalankan di lingkungan mana pun melalui Docker Compose | ✅ Terpenuhi |
-| NFR-06 | Skalabilitas | Backend chat bersifat *stateless* sehingga dapat di-*scale* horizontal | ✅ Terpenuhi (folder dokumen berupa bind mount; multi-host perlu penyimpanan bersama) |
-| NFR-07 | Kemudahan Konfigurasi | Perubahan model/endpoint cukup melalui *environment variable* | ✅ Terpenuhi |
-| NFR-08 | Ketersediaan | Endpoint health check tersedia untuk pemantauan otomatis | ✅ Terpenuhi (belum memeriksa Ollama/OpenSearch) |
-| NFR-09 | Aksesibilitas | Tampilan responsif di layar sempit dan menghormati preferensi animasi minimal | ✅ Terpenuhi |
-| NFR-10 | Persistensi Dokumen | Dokumen yang diunggah tetap tersimpan setelah container dibuat ulang | ✅ Terpenuhi (bind mount `./app/knowledge-base`) |
-| NFR-11 | Keamanan Akses | Pembatasan akses aplikasi, halaman upload, dan OpenSearch melalui autentikasi | ❌ Belum |
-| NFR-12 | Observabilitas | Logging terstruktur dan metrik penggunaan | ❌ Belum |
-| NFR-13 | Ketahanan | Mekanisme retry saat koneksi ke Ollama/OpenSearch gagal | ❌ Belum |
+| NFR-01 | Privasi | Seluruh pemrosesan berjalan di infrastruktur internal | ✅ |
+| NFR-02 | Responsivitas | Token pertama tampil sesegera mungkin (streaming) | ✅ |
+| NFR-03 | Keamanan | Input/output aman dari XSS | ✅ (textContent, DOMPurify, escapeHtml) |
+| NFR-04 | Keamanan Upload | Sanitasi nama file & validasi ekstensi | ✅ (batas ukuran belum) |
+| NFR-05 | Portabilitas | Berjalan via Docker Compose | ✅ |
+| NFR-06 | Skalabilitas | Backend stateless; ingest dipindah ke worker | ✅ (multi-host perlu penyimpanan bersama & Redis bersama) |
+| NFR-07 | Konfigurasi | Perubahan lewat *environment variable* | ✅ |
+| NFR-08 | Ketersediaan | Health check | ✅ (belum memeriksa dependensi) |
+| NFR-09 | Aksesibilitas | Responsif, `prefers-reduced-motion`, tema gelap | ✅ |
+| NFR-10 | Persistensi | Dokumen & data tetap ada setelah container dibuat ulang | ✅ (bind mount & named volume) |
+| NFR-11 | Keamanan Akses | Aplikasi wajib login | ✅ (akun demo; layanan pendukung belum) |
+| NFR-12 | Observability | Trace LLM, audit, metrik | ⚠ Sebagian — Langfuse & audit log ada; metrik penggunaan belum |
+| NFR-13 | Ketahanan | Retry ke Ollama/OpenSearch | ❌ Belum (fail-open untuk Redis sudah) |
+| NFR-14 | Least privilege database | Role database terpisah per kebutuhan | ✅ (readonly, writer, app) |
+| NFR-15 | Integritas audit | Audit log tidak dapat diubah/dihapus aplikasi | ✅ (role `nala_app` tanpa UPDATE/DELETE) |
+| NFR-16 | Keamanan query | Model tidak menulis SQL sendiri | ✅ (query tetap + whitelist + parameter) |
+| NFR-17 | Kualitas jawaban | Kualitas retrieval dapat diukur | ✅ (precision@k, hit rate, MRR, LLM judge; lihat [pengujian](./pengujian.md)) |
 
 ---
 
 ## 8. Alur Proses Bisnis
 
-### 8.1 Tanya-Jawab
+### 8.1 Login
 
-1. Pengguna membuka halaman NALA di browser.
-2. Pengguna mengetik pertanyaan, memilih apakah **Pakai RAG** aktif (default aktif), lalu menekan **Kirim**.
-3. Pertanyaan langsung tampil di area percakapan dan disimpan ke riwayat sisi browser; NALA menampilkan indikator "sedang mengetik".
-4. Browser mengirim seluruh riwayat percakapan ke backend.
-5. Backend memvalidasi request dan memangkas riwayat menjadi 10 pesan terakhir.
-6. Jika RAG aktif, backend mencari potongan dokumen SOP yang paling relevan dengan pertanyaan terakhir dan menyisipkannya sebagai konteks. Jika tidak ada dokumen relevan atau layanan pencarian tidak tersedia, model diminta menjawab dari pengetahuan umum dan menyarankan pengunggahan SOP.
-7. Backend meneruskan permintaan ke server Ollama.
-8. Jawaban dirender bertahap di layar.
-9. Setelah jawaban selesai, balasan disimpan ke riwayat sebagai konteks pertanyaan berikutnya.
-10. Pengguna dapat melanjutkan percakapan atau menekan **Reset** untuk memulai dari awal.
+1. Pengguna membuka NALA → diarahkan ke halaman login.
+2. Mengisi username & password → sistem memverifikasi dan menyimpan identitas (user, role, nama) di sesi selama 8 jam.
+3. Banner "Masuk sebagai <nama> [<role>]" tampil di semua halaman; **Logout** menghapus sesi.
 
-### 8.2 Pembaruan Knowledge Base
+### 8.2 Tanya-Jawab Mode Chat (RAG)
 
-1. Pengguna membuka halaman **Knowledge Base**.
-2. Pengguna memilih dokumen SOP (`.md`, `.txt`, `.pdf`) dan menekan **Upload**.
-3. Sistem menyimpan dokumen, memecahnya menjadi potongan, membuat embedding, dan menyimpannya ke OpenSearch.
-4. Sistem menampilkan jumlah potongan yang ter-index dan memperbarui daftar dokumen. Bila layanan pencarian tidak tersedia, dokumen tetap tersimpan namun belum dapat ditanyakan.
-5. Secara terpisah, tim IT dapat menjalankan DAG `ingest_documents` di Airflow untuk meng-*ingest* ulang seluruh folder knowledge base.
+1. Pengguna mengetik pertanyaan, memilih **Pakai RAG**, metode pencarian, dan **Rerank hasil**.
+2. Sistem mencari potongan SOP paling relevan dan menyisipkannya sebagai konteks.
+3. Jawaban tampil bertahap. Tanpa hasil relevan, model menjawab dari pengetahuan umum dan menyarankan pengunggahan SOP.
+
+### 8.3 Tanya-Jawab Mode Agent
+
+1. Pengguna menyalakan **Pakai Agent** dan bertanya (prosedur, data, atau keduanya).
+2. Bila pertanyaan identik pernah dijawab untuk role yang sama (≤ 1 jam), jawaban diambil dari cache (badge ⚡).
+3. Selain itu, agent memilih tool: **dokumen SOP** dan/atau **data operasional**.
+4. Bila role pengguna tidak berwenang atas data operasional, tool tidak dijalankan dan NALA menyampaikan "Akses ditolak".
+5. Jawaban tampil beserta badge tool dan daftar dokumen sumber.
+6. Sistem mencatat pertanyaan, role, tool, dan status izin ke audit log.
+
+### 8.4 Pembaruan Knowledge Base
+
+1. Pengguna mengunggah dokumen di halaman **Knowledge Base**.
+2. Sistem menyimpan file dan langsung membalas dengan nomor job; ingest berjalan di background.
+3. Setelah selesai, dokumen dapat ditanyakan dan cache jawaban dikosongkan.
+4. Tim IT dapat menjalankan DAG Airflow untuk meng-ingest ulang seluruh folder.
+
+### 8.5 Input Data Operasional
+
+1. Pengguna membuka **Data Operasional**, mengisi form pengajuan kredit atau klaim asuransi.
+2. Sistem memvalidasi (status sesuai aturan, format angka/tanggal) dan menyimpan data.
+3. Data baru langsung tampil di halaman pertama tabel dan dapat ditanyakan lewat mode Agent.
+
+### 8.6 Peninjauan Audit
+
+1. Tim audit/keamanan membuka `audit_log` (mis. lewat Adminer).
+2. Meninjau percobaan akses yang ditolak (`akses_diizinkan = false`) dan pola pertanyaan per role.
 
 ---
 
@@ -169,12 +226,14 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | No | Asumsi |
 |---|---|
-| A-1 | Server Ollama tersedia dan model `llama3.2:3b` serta `nomic-embed-text` telah diunduh sebelum aplikasi digunakan |
-| A-2 | Infrastruktur memiliki kapasitas komputasi memadai untuk menjalankan model chat, embedding, OpenSearch, dan Airflow secara lokal |
-| A-3 | Aplikasi diakses dari jaringan tepercaya (internal), sehingga autentikasi belum menjadi prioritas |
-| A-4 | Pengguna memahami bahwa riwayat percakapan akan hilang saat halaman ditutup |
-| A-5 | Dokumen SOP yang diunggah sudah valid, terbaru, dan boleh diakses seluruh pengguna NALA ⚠ |
-| A-6 | Jawaban NALA bersifat bantuan; untuk keputusan resmi pengguna tetap merujuk SOP asli atau unit terkait |
+| A-1 | Model chat (`qwen2.5:7b`) dan embedding (`nomic-embed-text`) sudah di-*pull* ke Ollama |
+| A-2 | Kapasitas komputasi memadai untuk Ollama, OpenSearch, Postgres, Redis, Airflow, Langfuse secara bersamaan |
+| A-3 | Aplikasi diakses dari jaringan internal tepercaya; akun demo hanya untuk pengembangan |
+| A-4 | Pengguna memahami riwayat percakapan hilang saat halaman ditutup |
+| A-5 | Dokumen SOP yang diunggah valid, terbaru, tidak saling bertentangan, dan boleh dibaca semua pengguna ⚠ |
+| A-6 | Jawaban NALA bersifat bantuan; keputusan resmi tetap merujuk SOP asli/unit terkait |
+| A-7 | Data operasional di lingkungan pengembangan adalah data fiktif |
+| A-8 | Pembagian akses data operasional (`staff_finance`, `supervisor`) sudah sesuai kebijakan ⚠ |
 
 ---
 
@@ -182,12 +241,14 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | No | Ketergantungan | Dampak Bila Tidak Tersedia |
 |---|---|---|
-| D-1 | Server Ollama aktif dan dapat dijangkau | Aplikasi tidak dapat menghasilkan jawaban maupun meng-*index* dokumen |
-| D-2 | Model chat dan model embedding telah di-*pull* ke server Ollama | Chat menghasilkan balasan kosong; RAG dan upload tidak berfungsi |
-| D-3 | OpenSearch aktif dan dapat dijangkau | Chat tetap berjalan tanpa konteks dokumen; dokumen upload tersimpan tapi belum ter-index |
-| D-4 | Docker & Docker Compose terpasang pada server | Deployment harus dilakukan manual |
-| D-5 | Kapasitas RAM/CPU (atau GPU) yang memadai | Latensi jawaban meningkat hingga melewati timeout (120 detik chat, 60 detik embedding) |
-| D-6 | Ketersediaan dokumen SOP dalam format teks (bukan hasil scan) | Isi PDF hasil scan tidak dapat dibaca sehingga tidak dapat ditanyakan |
+| D-1 | Ollama aktif, model sudah di-*pull* | Tidak ada jawaban maupun ingest |
+| D-2 | OpenSearch aktif | Chat tanpa konteks dokumen; ingest gagal |
+| D-3 | PostgreSQL aktif | Data operasional & tool SQL tidak tersedia; audit gagal (dicatat di log aplikasi); api tidak start (menunggu healthcheck) |
+| D-4 | Redis aktif | Cache & rate limit nonaktif (fail-open); upload tidak masuk antrian; api tidak start (menunggu healthcheck) |
+| D-5 | Worker RQ berjalan | Dokumen upload tersimpan tetapi tidak ter-index |
+| D-6 | Langfuse | Trace tidak tercatat; chat tetap jalan |
+| D-7 | Docker & Docker Compose | Deployment manual |
+| D-8 | Dokumen dalam format teks (bukan scan) | PDF scan tidak dapat ditanyakan |
 
 ---
 
@@ -195,26 +256,31 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | No | Risiko | Dampak | Mitigasi |
 |---|---|---|---|
-| R-1 | Model kecil menghasilkan jawaban kurang akurat atau salah mengutip SOP | Tinggi | Konteks diberi label sumber; *system prompt* melarang mengarang fakta; disclaimer di UI untuk mengecek SOP resmi; opsi upgrade model lewat konfigurasi |
-| R-2 | Server Ollama mati atau kelebihan beban | Tinggi | Pesan error di UI; perlu retry, deteksi error Ollama, dan health check yang memeriksa dependensi |
-| R-3 | Aplikasi, halaman upload, dan OpenSearch tanpa autentikasi diakses/diubah pihak tak berwenang | Tinggi | Batasi akses pada jaringan internal; tambahkan autentikasi dan aktifkan security plugin OpenSearch sebelum rilis |
-| R-4 | Dokumen SOP kedaluwarsa atau tidak valid diunggah sehingga jawaban menyesatkan | Tinggi | Tetapkan pemilik dokumen; tambahkan fitur hapus/perbarui dokumen dan alur persetujuan |
-| R-5 | Pengguna membagikan data nasabah/kredensial di chat | Tinggi | *System prompt* menolak dan mengingatkan; sosialisasi kepada pengguna; data tidak disimpan di server |
-| R-6 | Dokumen upload hilang saat container API dibuat ulang | Rendah | Sudah dimitigasi: folder knowledge base di-bind mount dari host dan dipakai bersama oleh API & Airflow; tetap perlu backup folder `./app/knowledge-base` |
-| R-7 | Percakapan panjang menyebabkan konteks awal terpotong | Rendah | Windowing 10 pesan sudah diterapkan dan diinformasikan ke pengguna melalui UI |
-| R-8 | Lonjakan pengguna bersamaan menurunkan performa | Sedang | Backend stateless memungkinkan penambahan instance; perlu perencanaan kapasitas Ollama |
+| R-1 | Model mengarang jawaban atau data | Tinggi | System prompt melarang mengarang data nasabah; data hanya dari tool SQL; disclaimer UI; lampiran sumber |
+| R-2 | Pengguna tidak berwenang mengakses data nasabah | Tinggi | RBAC saat eksekusi tool; audit log; identitas hanya dari sesi |
+| R-3 | Akun demo/kredensial development terbawa ke produksi | Tinggi | Ganti dengan manajemen pengguna sungguhan dan secret management sebelum rilis |
+| R-4 | Layanan pendukung (OpenSearch, Adminer, RedisInsight, Airflow) tanpa autentikasi | Tinggi | Batasi di level jaringan; aktifkan security plugin; jangan publikasikan port |
+| R-5 | Dokumen SOP kedaluwarsa/bertentangan | Tinggi | Pemilik dokumen; hapus duplikat; fitur hapus/versi dokumen |
+| R-6 | Jawaban cache usang setelah data berubah | Sedang | TTL 1 jam; invalidasi saat ingest; perlu invalidasi saat data operasional berubah |
+| R-7 | Pengguna membagikan data sensitif di chat | Tinggi | System prompt menolak & mengingatkan; riwayat tidak disimpan server |
+| R-8 | Lonjakan pengguna | Sedang | Cache, rate limit, ingest di worker; perencanaan kapasitas Ollama |
+| R-9 | Rate limit per IP tidak akurat di balik proxy | Sedang | Ganti kunci rate limit ke `user_id` sesi |
+| R-10 | Kualitas retrieval rendah untuk bahasa Indonesia | Sedang | BM25/hybrid + rerank; evaluasi berkala; uji model embedding & reranker multibahasa |
 
 ---
 
-## 12. Rencana Pengembangan Lanjutan ⚠
+## 12. Rencana Pengembangan ⚠
 
-| Fase | Fokus | Cakupan |
-|---|---|---|
-| **Fase 1 — Selesai** | MVP | Chat streaming, windowing konteks, reset, deployment Docker |
-| **Fase 2 — Selesai** | Knowledge Base & RAG | Upload dokumen, ingest ke OpenSearch, RAG dengan switch on/off, persona pegawai perbankan, indikator loading, pesan error di UI, redesain tampilan |
-| **Fase 3 — Berjalan** | Stabilitas Pipeline | Selesai: streaming real-time dari Ollama, folder knowledge base persisten & seragam untuk API dan Airflow. Sisa: deteksi error Ollama, hapus/perbarui dokumen, retry |
-| **Fase 4** | Keamanan & Observabilitas | Autentikasi (termasuk pembatasan halaman upload), security plugin OpenSearch, rate limiting, batas ukuran upload, logging terstruktur, metrik penggunaan |
-| **Fase 5** | Pengayaan Fitur | Tampilan sumber dokumen pada jawaban, penyimpanan riwayat, pemilihan model dari UI, OCR untuk PDF hasil scan, jadwal ingest otomatis |
+| Fase | Fokus | Status | Cakupan |
+|---|---|---|---|
+| 1 | MVP | ✅ Selesai | Chat streaming, windowing, reset, Docker |
+| 2 | Knowledge Base & RAG | ✅ Selesai | Upload, ingest OpenSearch, switch RAG, persona perbankan |
+| 3 | Kualitas Retrieval | ✅ Selesai | Chunk per heading, BM25, hybrid RRF, reranker, evaluasi, LLM judge, Langfuse |
+| 4 | Data Operasional & Agent | ✅ Selesai | Postgres, halaman input, agent LangGraph, tool SQL terbatas |
+| 5 | Keamanan & Audit | ✅ Selesai | Login/sesi, RBAC tool SQL, audit log, role database |
+| 6 | Performa & Ketahanan | ✅ Selesai | Redis cache, antrian ingest RQ, rate limiting, RedisInsight |
+| 7 | Pengalaman Pengguna | ✅ Selesai | Bubble, typing indicator, badge tool, lampiran sumber, tema gelap, responsif |
+| 8 | Produksi | Rencana | Manajemen pengguna nyata/SSO, secret management, autentikasi layanan pendukung, rate limit per user, hapus/versi dokumen, RBAC dokumen, metrik, retry, ambang skor retrieval, reranker & embedding multibahasa |
 
 ---
 
@@ -222,18 +288,32 @@ NALA dibangun untuk menjawab keduanya: asisten AI untuk pegawai perbankan yang b
 
 | No | Kriteria | Status |
 |---|---|---|
-| AC-1 | Pengguna dapat mengirim pertanyaan dan menerima jawaban dari model lokal | ✅ |
-| AC-2 | Jawaban tampil secara bertahap, bukan sekaligus setelah selesai | ✅ |
-| AC-3 | Pertanyaan lanjutan dijawab dengan mempertimbangkan konteks percakapan sebelumnya | ✅ |
+| AC-1 | Pengguna mengirim pertanyaan dan menerima jawaban dari model lokal | ✅ |
+| AC-2 | Jawaban mode chat tampil bertahap | ✅ |
+| AC-3 | Pertanyaan lanjutan mempertimbangkan konteks sebelumnya | ✅ |
 | AC-4 | Request tidak valid ditolak dengan kode status yang tepat | ✅ |
-| AC-5 | Aplikasi dapat dijalankan melalui satu perintah `docker compose up` | ✅ |
-| AC-6 | Tidak ada data percakapan maupun dokumen yang dikirim ke layanan eksternal | ✅ |
-| AC-7 | Dokumen SOP yang diunggah dapat langsung dijadikan rujukan jawaban | ✅ |
+| AC-5 | Aplikasi berjalan melalui `docker compose up` | ✅ |
+| AC-6 | Tidak ada data dikirim ke layanan eksternal | ✅ |
+| AC-7 | Dokumen yang diunggah dapat dijadikan rujukan jawaban | ✅ |
 | AC-8 | Chat tetap berfungsi saat OpenSearch tidak tersedia | ✅ |
-| AC-9 | Pengguna dapat memperoleh jawaban tanpa pencarian dokumen dengan mematikan switch RAG | ✅ |
+| AC-9 | Jawaban tanpa pencarian dokumen saat RAG dimatikan | ✅ |
+| AC-10 | Tanpa login, halaman diarahkan ke login dan API mengembalikan 401 | ✅ |
+| AC-11 | `staff_umum` yang menanyakan data operasional menerima "Akses ditolak" dan tool SQL tidak dijalankan | ✅ |
+| AC-12 | `staff_finance`/`supervisor` menerima jawaban berbasis data operasional | ✅ |
+| AC-13 | Setiap pertanyaan mode Agent tercatat di `audit_log` dengan role dan status izin | ✅ |
+| AC-14 | Role/user_id di body request diabaikan | ✅ |
+| AC-15 | Pertanyaan identik kedua dijawab dari cache (badge ⚡) | ✅ |
+| AC-16 | Melebihi batas request menghasilkan HTTP 429 | ✅ |
+| AC-17 | Upload langsung dibalas dengan job ID; dokumen ter-index oleh worker | ✅ |
+| AC-18 | Semua kontrol composer tetap terlihat pada layar 375px | ✅ |
 
 ---
 
 ## 14. Dokumen Terkait
 
-- [`spesifikasi.md`](./spesifikasi.md) — spesifikasi teknis, arsitektur, detail API, dan batasan implementasi
+- [`spesifikasi.md`](./spesifikasi.md) — spesifikasi teknis, arsitektur, API, database, konfigurasi
+- [`keamanan-rbac-audit.md`](./keamanan-rbac-audit.md) — desain keamanan, RBAC, audit
+- [`panduan-instalasi-dan-operasional.md`](./panduan-instalasi-dan-operasional.md) — instalasi, operasional, troubleshooting
+- [`panduan-pengguna.md`](./panduan-pengguna.md) — cara pakai per role
+- [`pengujian.md`](./pengujian.md) — hasil uji & skenario uji
+- [`riwayat-pengembangan.md`](./riwayat-pengembangan.md) — kronologi pengembangan

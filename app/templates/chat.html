@@ -1,4 +1,14 @@
 <!-- app/templates/chat.html -->
+<!-- Halaman chat utama NALA (wajib login). Seluruh logika frontend berupa vanilla JavaScript di
+     bagian bawah file ini:
+     - Mode normal  : POST /chat/stream, balasan dibaca per potongan (ReadableStream) dan dirender
+                      bertahap; switch RAG, metode pencarian (BM25/Vector), dan reranking ikut dikirim.
+     - Mode agent   : POST /chat (non-streaming); response berisi reply, tool_used (badge), dan
+                      sources (lampiran dokumen sumber).
+     - Riwayat percakapan hanya disimpan di memori browser (variabel conversation).
+     - Keamanan     : teks user masuk lewat textContent; balasan model di-render sebagai Markdown lalu
+                      disanitasi DOMPurify; nama file sumber di-escape dengan escapeHtml().
+     Variabel context Jinja: user = {user_id, role, nama, role_label} dari sesi (untuk banner). -->
 <!DOCTYPE html>
 <html lang="id">
 <head>

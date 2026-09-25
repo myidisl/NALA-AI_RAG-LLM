@@ -1,5 +1,15 @@
-# Entry point FastAPI untuk aplikasi NALA: menyajikan halaman chat dan
-# endpoint streaming yang meneruskan percakapan ke Ollama.
+# app/main.py
+# Entry point FastAPI aplikasi NALA. Berisi:
+# - Login/sesi (SessionMiddleware + app/auth.py): semua halaman & endpoint wajib login;
+#   user_id dan role SELALU dibaca dari sesi, tidak pernah dari body request.
+# - POST /chat/stream : chat streaming dengan RAG (vector/BM25/hybrid + reranking opsional).
+# - POST /chat        : mode agent (LangGraph, app/agent.py) dengan tool SOP & SQL, RBAC per role,
+#                       audit log (app/audit.py), cache jawaban Redis (app/cache.py), badge tool,
+#                       dan lampiran dokumen sumber.
+# - GET/POST /upload  : knowledge base; ingest dijalankan worker RQ di background (app/queue.py).
+# - /data-operasional : input & daftar data pengajuan kredit / klaim asuransi (Postgres).
+# - Rate limiting per IP berbasis Redis (app/rate_limit.py) di endpoint chat, upload, dan tulis data.
+# - Observability: setiap request chat dicatat sebagai trace Langfuse.
 import os
 from datetime import date
 from decimal import Decimal

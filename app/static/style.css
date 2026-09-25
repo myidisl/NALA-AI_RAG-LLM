@@ -1,8 +1,12 @@
 /* app/static/style.css
-   Tampilan bergaya aplikasi chat Gen-AI: layout satu layar penuh, pesan NALA
-   tanpa bubble (avatar + teks), pesan user berupa bubble di kanan, dan composer
-   melayang di bawah. Semua animasi murni CSS; tidak ada logic JS yang bergantung
-   pada file ini selain id elemen di chat.html. */
+   Tampilan bergaya aplikasi chat Gen-AI untuk semua halaman (chat, knowledge base, data
+   operasional, login): layout satu layar penuh, pesan berupa bubble (.msg-row > .bubble; user di
+   kanan, NALA di kiri dengan avatar), dan composer melayang di bawah.
+   - Warna SELALU lewat token var(--...) di :root (tema terang = default); tema gelap hanya menimpa
+     token di bagian akhir file (prefers-color-scheme: dark / html[data-theme="dark"]).
+   - Responsif: breakpoint 600px dan 480px (kontrol composer jadi satu kolom).
+   Semua animasi murni CSS; tidak ada logic JS yang bergantung pada file ini selain id/class
+   elemen di template. */
 
 /* Palet warna NALA (skema yang sudah dipakai sebelumnya) */
 :root {

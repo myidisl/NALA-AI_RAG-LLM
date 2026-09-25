@@ -1,4 +1,6 @@
-# Client sederhana untuk berkomunikasi dengan server Ollama lokal via HTTP.
+# app/ollama_client.py
+# Client sederhana untuk berkomunikasi dengan server Ollama lokal via HTTP:
+# chat_stream() untuk /chat/stream, chat() (dengan tools) untuk agent, generate() untuk LLM judge.
 import json
 import os
 
@@ -6,7 +8,7 @@ import httpx
 
 
 class OllamaClient:
-    """Wrapper HTTP untuk endpoint Ollama: /api/generate (sekali jawab) dan /api/chat (streaming)."""
+    """Wrapper HTTP untuk endpoint Ollama: /api/generate (sekali jawab) dan /api/chat (streaming maupun non-streaming dengan tools)."""
 
     def __init__(self, base_url: str | None = None, model: str | None = None):
         """Initialize the client with the base URL and default model of the Ollama server (env vars OLLAMA_BASE_URL / OLLAMA_MODEL)."""

@@ -1,9 +1,9 @@
 # Spesifikasi Teknis — NALA
 
 **Nama Aplikasi:** NALA (*Not Another Lowkey Assistant*)
-**Versi Dokumen:** 2.1
-**Tanggal:** 2026-09-24
-**Status:** Aktif — menggambarkan implementasi saat ini
+**Versi Dokumen:** 3.0
+**Tanggal:** 2026-09-25
+**Status:** Aktif — menggambarkan implementasi sampai Module 29
 
 **Riwayat Perubahan:**
 
@@ -12,59 +12,124 @@
 | 1.0 | 2026-09-23 | MVP: chat streaming ke Ollama, windowing konteks, reset, deployment Docker |
 | 2.0 | 2026-09-24 | RAG berbasis OpenSearch, halaman upload knowledge base, pipeline ingest (Airflow), switch RAG di UI, persona asisten pegawai perbankan, redesain UI |
 | 2.1 | 2026-09-24 | Streaming real-time dari Ollama (`httpx.stream`); folder knowledge base API & Airflow disatukan lewat bind mount `./app/knowledge-base` |
+| 3.0 | 2026-09-25 | BM25 & hybrid search (RRF), reranker cross-encoder, evaluasi retrieval & LLM judge, observability Langfuse, database data operasional (Postgres), agent LangGraph dengan tool SOP & SQL, login/sesi, RBAC, audit log, Redis (cache jawaban, antrian ingest RQ, rate limiting), RedisInsight & Adminer, pembaruan UI (bubble, typing indicator, badge tool, lampiran sumber, tema gelap, responsif) |
+
+> Dokumen terkait: [BRD](./BRD.md) · [Panduan Instalasi & Operasional](./panduan-instalasi-dan-operasional.md) · [Keamanan, RBAC & Audit](./keamanan-rbac-audit.md) · [Panduan Pengguna](./panduan-pengguna.md) · [Pengujian](./pengujian.md) · [Riwayat Pengembangan](./riwayat-pengembangan.md)
 
 ---
 
 ## 1. Ringkasan Sistem
 
-NALA adalah aplikasi web chat berbasis LLM lokal untuk **pegawai perbankan**. Pengguna bertanya seputar teknologi maupun SOP internal bank melalui halaman web. Backend mencari potongan dokumen SOP yang relevan dari **knowledge base** (Retrieval-Augmented Generation / RAG), menyisipkannya sebagai konteks, lalu meneruskan percakapan ke server **Ollama** yang menjalankan model bahasa secara lokal. Jawaban dikirim balik ke browser sebagai *stream* teks.
+NALA adalah aplikasi web chat berbasis LLM lokal untuk pegawai **PT Nusantara Finance**. Pengguna login, lalu bertanya seputar teknologi, SOP internal, maupun data operasional melalui dua mode:
 
-Dokumen knowledge base (`.md`, `.txt`, `.pdf`) diunggah lewat halaman **Knowledge Base**, dipecah menjadi *chunk*, diubah menjadi vektor embedding oleh Ollama, dan disimpan di **OpenSearch** untuk pencarian kemiripan (k-NN).
+| Mode | Endpoint | Cara Kerja |
+|---|---|---|
+| **Chat (RAG)** — default | `POST /chat/stream` | Backend mencari potongan dokumen SOP (vector / BM25 / hybrid, opsional reranking), menyisipkannya sebagai konteks, lalu men-*stream* jawaban Ollama token per token |
+| **Agent** — switch "Pakai Agent" | `POST /chat` | Agent LangGraph memutuskan sendiri kapan memanggil tool `cari_dokumen_sop` (RAG) atau `query_data_operasional` (SQL terbatas). Akses tool SQL dibatasi per role (RBAC), setiap request dicatat di audit log, dan jawaban di-*cache* di Redis |
 
-Seluruh pemrosesan (LLM, embedding, penyimpanan vektor) berjalan di infrastruktur sendiri — tidak ada data percakapan maupun dokumen yang dikirim ke penyedia pihak ketiga.
+Dokumen knowledge base (`.md`, `.txt`, `.pdf`) diunggah lewat halaman **Knowledge Base**, lalu di-*ingest* di background oleh worker RQ: dipecah menjadi *chunk*, diubah menjadi embedding oleh Ollama, dan disimpan di **OpenSearch**. Data operasional (pengajuan kredit, klaim asuransi) disimpan di **PostgreSQL** dan dapat diinput lewat halaman **Data Operasional**.
+
+Seluruh pemrosesan (LLM, embedding, reranking, penyimpanan) berjalan di infrastruktur sendiri — tidak ada percakapan maupun dokumen yang dikirim ke penyedia pihak ketiga.
 
 ---
 
 ## 2. Arsitektur
 
-### 2.1 Diagram Alur Chat (RAG)
+### 2.1 Diagram Komponen
 
 ```
-┌──────────────┐  POST /chat/stream  ┌──────────────┐  1. /api/embed        ┌──────────────────┐
-│   Browser    │ ──────────────────> │   FastAPI    │ ────────────────────> │     Ollama       │
-│  (chat.html) │                     │  (main.py)   │  3. /api/chat         │ nomic-embed-text │
-│              │ <────────────────── │              │ <──────────────────── │ llama3.2:3b      │
-└──────────────┘   text/plain        └──────┬───────┘   NDJSON              └──────────────────┘
-                   (stream)                 │ 2. k-NN search (top 6)
-                                            v
-                                     ┌──────────────┐
-                                     │  OpenSearch  │  index "nala-docs"
-                                     └──────────────┘
+                          ┌──────────────────────────── Docker Compose (network default) ───────────────────────────┐
+┌──────────┐  HTTP 8000   │ ┌──────────────┐  /api/chat, /api/embed   ┌─────────┐                                   │
+│ Browser  │ ───────────> │ │  api         │ ───────────────────────> │ ollama  │  qwen2.5:7b, nomic-embed-text     │
+│ (login,  │ <─────────── │ │  FastAPI     │                          └─────────┘                                   │
+│  chat,   │  HTML/stream │ │  (main.py)   │ ── k-NN / BM25 ────────> ┌────────────┐ <── dashboards (5601)          │
+│  upload, │   /JSON      │ │              │                          │ opensearch │     index "nala-docs"          │
+│  data)   │              │ │              │ ── SELECT/INSERT ──────> ┌──────────┐  <── adminer (8081)             │
+└──────────┘              │ │              │                          │ postgres │  nala_operasional               │
+                          │ │              │ ── cache / rate limit ─> ┌───────┐ <── redisinsight (5540)            │
+                          │ │              │ ── enqueue job ────────> │ redis │                                    │
+                          │ │              │ ── trace ──────────────> ┌──────────┐ ── langfuse-db (Postgres)       │
+                          │ └──────────────┘                          │ langfuse │  UI 3000                        │
+                          │ ┌──────────────┐  rq worker ingest  ───── └──────────┘                                  │
+                          │ │  worker      │ <─ job ─ redis ;  ingest ─> ollama (embed) ─> opensearch (index)       │
+                          │ └──────────────┘                                                                       │
+                          │ ┌──────────────┐  DAG ingest_documents (manual) ─> ollama ─> opensearch                │
+                          │ │  airflow     │  UI 8080                                                              │
+                          │ └──────────────┘                                                                       │
+                          └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Diagram Alur Ingest Dokumen
+### 2.2 Alur Chat RAG (`POST /chat/stream`)
 
 ```
-Upload (POST /upload)  ─┐                                   ┌─> Ollama /api/embed (per chunk)
-                        ├─> simpan file ─> extract_text ─> chunk ─┤
-Airflow DAG (manual)  ──┘   (pypdf / baca teks)                  └─> OpenSearch PUT /nala-docs/_doc/{file}-{i}
+Browser ──> rate limit (Redis) ──> cek sesi ──> retrieval ──────────────┐
+                                                 vector : embed ─> k-NN │
+                                                 bm25   : match "text"  ├─> [rerank cross-encoder] ─> pilih system prompt
+                                                 hybrid : BM25 + k-NN   │         (opsional)            + sisipkan konteks
+                                                          digabung RRF ─┘                                    │
+Browser <── text/plain (stream token) <── Ollama /api/chat (stream) <────────────────────────────────────────┘
+                     └─ trace Langfuse: span retrieval, span rerank, generation llm_generate_stream
 ```
 
-### 2.3 Komponen
+### 2.3 Alur Agent (`POST /chat`)
+
+```
+Browser ──> rate limit ──> sesi (user_id, role) ──> cache Redis (key: pertanyaan+role) ──hit──> audit "cache" ─> response
+                                                         │ miss
+                                                         v
+                     ┌──────────── LangGraph ─────────────────────────────────────┐
+                     │ call_model (Ollama /api/chat + ALL_TOOLS)                  │
+                     │     │ tool_calls?                                          │
+                     │     ├─ ya ─> call_tool ── RBAC: role boleh SQL? ─┐          │
+                     │     │          cari_dokumen_sop ─> rag_search     │          │
+                     │     │          query_data_operasional ─> Postgres │ (ditolak: "Akses ditolak: ...")
+                     │     │        <─ hasil tool + called_tools ────────┘          │
+                     │     └─ tidak ─> END (jawaban akhir)                         │
+                     └────────────────────────────────────────────────────────────┘
+                                   │
+                                   v
+      audit_log (satu baris per tool) ─> simpan cache ─> ChatResponse {reply, tool_used, sources}
+```
+
+### 2.4 Alur Ingest Dokumen
+
+```
+POST /upload ─> simpan file ke knowledge-base ─> enqueue job RQ (antrian "ingest") ─> response langsung (job ID)
+                                                          │
+                          worker: ingest_document_job ────┘
+                            extract_text (teks / pypdf) ─> chunk (per heading .md / 500 karakter) ─> embed (Ollama)
+                            ─> PUT OpenSearch /nala-docs/_doc/{file}-{i} ─> invalidate_answer_cache()
+
+Airflow DAG ingest_documents (manual) ─> ingest_documents(folder) ─> fungsi ingest yang sama
+```
+
+### 2.5 Komponen Kode
 
 | Komponen | File | Tanggung Jawab |
 |---|---|---|
-| Web Server & Routing | `app/main.py` | Endpoint chat, upload, dan halaman; retrieval konteks RAG; pemilihan system prompt; streaming response |
-| Ollama Client | `app/ollama_client.py` | Wrapper HTTP ke API Ollama (`/api/generate`, `/api/chat`) |
-| Embedding | `app/embeddings.py` | Mengubah teks menjadi vektor lewat Ollama `/api/embed` (model `nomic-embed-text`) |
-| Vector Store | `app/vector_store.py` | Wrapper REST OpenSearch: buat index k-NN, simpan chunk, pencarian k-NN |
-| Ingest | `app/ingest.py` | Ekstraksi teks (`.md`/`.txt`/`.pdf`), chunking, embedding, dan indexing ke OpenSearch |
-| System Prompt | `app/system_prompt.py` | Persona & batasan NALA, plus 2 varian (tanpa konteks dokumen, RAG dimatikan) |
-| Halaman Chat | `app/templates/chat.html` | UI chat + logika frontend (vanilla JavaScript) |
-| Halaman Knowledge Base | `app/templates/upload.html` | Form upload dokumen dan daftar dokumen tersimpan (Jinja2, tanpa JavaScript) |
-| Styling | `app/static/style.css` | Tampilan kedua halaman; aset logo `app/static/NALA_Logov2.jpg` |
-| Pipeline Ingest | `airflow/dags/ingest_documents_dag.py` | DAG Airflow `ingest_documents` untuk ingest seluruh folder knowledge base |
-| Kontainerisasi | `app/Dockerfile`, `docker-compose.yml` | Build image API dan orkestrasi 5 service |
+| Web server & routing | `app/main.py` | Semua endpoint; retrieval RAG; pemilihan system prompt; streaming; agent, audit, cache, badge, sumber; data operasional; rate limit |
+| Autentikasi | `app/auth.py` | User demo, label role, `verify_user()`, `get_current_user()` dari sesi |
+| Agent | `app/agent.py` | Graph LangGraph `call_model → call_tool → call_model`; RBAC tool SQL; pencatatan `called_tools` |
+| Tool RAG | `app/tools/rag_tool.py` | `cari_dokumen_sop`: hybrid search + rerank, mengembalikan (teks, daftar sumber) |
+| Tool SQL | `app/tools/sql_tool.py` | `query_data_operasional`: query SELECT tetap & berparameter (whitelist tabel/mode/status) |
+| Ollama client | `app/ollama_client.py` | `chat_stream()`, `chat()` (dengan tools), `generate()` |
+| Embedding | `app/embeddings.py` | Teks → vektor via Ollama `/api/embed` (`nomic-embed-text`) |
+| Vector store | `app/vector_store.py` | REST OpenSearch: buat index, simpan chunk, k-NN, BM25, hybrid (RRF) |
+| Reranker | `app/reranker.py` | Cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Ingest | `app/ingest.py` | Ekstraksi teks, chunking, embedding, indexing |
+| Antrian & job | `app/queue.py`, `app/jobs.py` | Antrian RQ `ingest`; job ingest + invalidasi cache |
+| Cache | `app/cache.py` | Cache jawaban Redis per (pertanyaan, role, metode, rerank) |
+| Rate limit | `app/rate_limit.py` | Fixed window per (bucket, IP), fail-open |
+| Database | `app/db.py` | Koneksi Postgres role `nala_readonly` (baca) dan `nala_writer` (tulis) |
+| Audit | `app/audit.py` | `log_audit()` ke tabel `audit_log` dengan role `nala_app` |
+| System prompt | `app/system_prompt.py` | Persona NALA + varian (tanpa konteks, RAG mati, agent) |
+| Evaluasi | `app/evaluation.py`, `app/llm_judge.py`, `app/run_evaluation.py` | Metrik retrieval (precision@k, hit rate, MRR) dan LLM-as-judge |
+| Template | `app/templates/*.html` | `login`, `chat`, `upload`, `data_operasional` |
+| Styling | `app/static/style.css` | Semua halaman; token warna, tema gelap, responsif |
+| Library frontend lokal | `app/static/vendor/` | `marked` (Markdown) dan `DOMPurify` (sanitasi HTML) — disajikan lokal, tanpa CDN |
+| Pipeline Airflow | `airflow/dags/ingest_documents_dag.py` | DAG manual `ingest_documents` |
+| Database seed | `db/seed.sql` | Tabel, data contoh, role database |
+| Kontainerisasi | `app/Dockerfile`, `docker-compose.yml` | Image api/worker; orkestrasi 12 service |
 
 ---
 
@@ -73,337 +138,412 @@ Airflow DAG (manual)  ──┘   (pypdf / baca teks)                  └─> O
 | Kategori | Teknologi | Versi |
 |---|---|---|
 | Bahasa | Python | 3.12 |
-| Web Framework | FastAPI | 0.141.1 |
-| ASGI Server | Uvicorn | 0.53.0 |
-| HTTP Client | httpx | 0.28.1 (API) / 0.27.2 (Airflow) |
-| Validasi Data | Pydantic | 2.13.5 |
-| Template Engine | Jinja2 | 3.1.4 |
-| ASGI Toolkit | Starlette | 1.6.0 |
-| Upload Multipart | python-multipart | 0.0.12 |
+| Web framework / ASGI | FastAPI / Uvicorn / Starlette | 0.141.1 / 0.53.0 / 1.6.0 |
+| Sesi | Starlette `SessionMiddleware` + itsdangerous | 2.2.0 |
+| HTTP client | httpx | 0.28.1 |
+| Template | Jinja2 | 3.1.4 |
 | Ekstraksi PDF | pypdf | 5.1.0 |
-| LLM Runtime | Ollama | latest |
-| Model Chat | llama3.2:3b | — |
-| Model Embedding | nomic-embed-text (768 dimensi) | — |
-| Vector Store | OpenSearch (+ plugin k-NN, HNSW/nmslib, cosine similarity) | 2.11.0 |
-| UI Vector Store | OpenSearch Dashboards | 2.11.0 |
-| Orkestrasi Pipeline | Apache Airflow (mode standalone) | 2.10.2 |
-| Frontend | HTML + CSS + JavaScript (tanpa framework) | — |
+| Reranker | sentence-transformers (+ torch CPU) | 3.2.1 (torch 2.6.0+cpu) |
+| Agent | LangGraph | 0.2.39 |
+| Database driver | psycopg (binary) | 3.2.3 |
+| Cache & antrian | redis-py / RQ | 5.0.8 / 1.16.2 |
+| Observability | Langfuse SDK / server | 2.x / image `langfuse/langfuse:2` |
+| LLM runtime | Ollama | latest |
+| Model chat & agent | `qwen2.5:7b` (docker-compose) — fallback kode `llama3.2:3b` | — |
+| Model embedding | `nomic-embed-text` (768 dimensi) | — |
+| Vector store | OpenSearch (k-NN HNSW/nmslib, cosine) + Dashboards | 2.11.0 |
+| Database | PostgreSQL | 16 (data operasional), 15-alpine (Langfuse) |
+| Cache/queue | Redis | 7-alpine |
+| GUI database | Adminer, RedisInsight | latest |
+| Pipeline | Apache Airflow (standalone) | 2.10.2 |
+| Frontend | HTML + CSS + vanilla JavaScript; marked + DOMPurify (lokal) | — |
 | Deployment | Docker + Docker Compose | — |
 
 ---
 
 ## 4. Spesifikasi API
 
-### 4.1 `GET /`
+Semua endpoint selain `/health`, `/login`, dan `/static/*` **wajib login**. Halaman HTML yang diakses tanpa sesi di-*redirect* ke `/login` (303); endpoint JSON (`/chat`, `/chat/stream`) mengembalikan `401`.
 
-Menampilkan halaman chat utama.
+### 4.1 Ringkasan Endpoint
 
-- **Response:** `text/html` — render dari `app/templates/chat.html`
+| Method | Path | Login | Rate limit | Keterangan |
+|---|---|---|---|---|
+| GET | `/health` | – | – | Health check proses API |
+| GET | `/login` | – | – | Form login; bila sudah login → redirect `/` |
+| POST | `/login` | – | – | Verifikasi akun; sukses → set sesi + 303 ke `/`; gagal → 401 |
+| GET | `/logout` | – | – | Hapus sesi, redirect `/login` |
+| GET | `/` | ✅ | – | Halaman chat |
+| POST | `/chat/stream` | ✅ (401) | `chat` 20/menit | Chat RAG streaming |
+| POST | `/chat` | ✅ (401) | `chat` 20/menit | Mode agent |
+| GET | `/upload` | ✅ | – | Halaman knowledge base |
+| POST | `/upload` | ✅ | `upload` 5/menit | Simpan file + enqueue ingest |
+| GET | `/data-operasional` | ✅ | – | Form & tabel data operasional (`?kredit_page=&klaim_page=`) |
+| POST | `/data-operasional/pengajuan-kredit` | ✅ | `data-operasional` 10/menit | Tambah pengajuan kredit |
+| POST | `/data-operasional/klaim-asuransi` | ✅ | `data-operasional` 10/menit | Tambah klaim asuransi |
+| GET | `/static/*` | – | – | CSS, logo, library frontend |
 
-### 4.2 `GET /health`
+Rate limit dihitung **sebelum** pemeriksaan login dan per IP (lihat §9). Melebihi batas → `429` dengan pesan berbahasa Indonesia.
 
-Health check untuk monitoring/orkestrator. Hanya menandakan proses API hidup; **tidak** memeriksa Ollama maupun OpenSearch.
+### 4.2 `POST /login`
 
-- **Response:** `200 OK`
-  ```json
-  { "status": "ok" }
-  ```
+- **Request:** `application/x-www-form-urlencoded` — `username`, `password`.
+- **Sukses:** sesi berisi `user_id`, `role`, `nama`; `303` ke `/`.
+- **Gagal:** `401`, halaman login dengan pesan "Username atau password salah."
 
 ### 4.3 `POST /chat/stream`
-
-Mengirim percakapan ke model dan menerima balasan sebagai stream teks.
 
 **Request Body:**
 ```json
 {
   "messages": [
-    { "role": "user", "content": "Apa syarat pengajuan kredit?" },
-    { "role": "assistant", "content": "Syaratnya ..." },
-    { "role": "user", "content": "Berapa lama prosesnya?" }
+    { "role": "user", "content": "Apa syarat pengajuan kredit?" }
   ],
-  "use_rag": true
+  "use_rag": true,
+  "search_method": "hybrid",
+  "use_reranking": true
 }
 ```
 
-| Field | Tipe | Wajib | Keterangan |
+| Field | Tipe | Default | Keterangan |
 |---|---|---|---|
-| `messages` | array `{role, content}` | Ya | Seluruh riwayat percakapan, urut dari yang terlama |
-| `use_rag` | boolean | Tidak (default `true`) | `false` = lewati pencarian dokumen |
+| `messages` | array `{role, content}` | wajib | Seluruh riwayat, urut dari yang terlama; pesan terakhir wajib `user` |
+| `use_rag` | boolean | `true` | `false` = lewati pencarian dokumen |
+| `search_method` | `"vector"` \| `"bm25"` \| `"hybrid"` | `"hybrid"` | Nilai lain → `422` |
+| `use_reranking` | boolean | `true` | Diabaikan bila server `RERANK_ENABLED=false` |
 
-**Aturan Validasi:**
+**Validasi:** `messages` kosong atau pesan terakhir bukan `user` → `400`; skema tidak sesuai → `422`; tanpa sesi → `401`.
 
-| Kondisi | Hasil |
-|---|---|
-| `messages` kosong | `400 Bad Request` |
-| Pesan terakhir bukan `role: "user"` | `400 Bad Request` |
-| Struktur body tidak sesuai skema | `422 Unprocessable Entity` (otomatis oleh Pydantic) |
+**Pemrosesan:**
+1. Ambil maksimal 10 pesan terakhir (`HISTORY_WINDOW`).
+2. Bila `use_rag`: retrieval dengan pertanyaan terakhir.
 
-**Response:** `200 OK`, `Content-Type: text/plain`, body berupa aliran potongan teks balasan.
-
-**Pemrosesan Internal:**
-1. Ambil maksimal **10 pesan terakhir** (`HISTORY_WINDOW`) dari `messages`.
-2. Jika `use_rag = true`: buat embedding dari **pesan user terakhir**, lalu cari **6 chunk** paling mirip (`top_k=6`) di index `nala-docs`. Bila Ollama/OpenSearch gagal (`httpx.HTTPError`), hasil dianggap kosong dan chat tetap berjalan.
-3. Pilih system prompt dan isi pesan terakhir:
-
-   | Kondisi | System prompt | Isi pesan user terakhir |
+   | Kondisi | Jumlah kandidat | Konteks ke model |
    |---|---|---|
-   | `use_rag = false` | `NALA_SYSTEM_PROMPT_RAG_OFF` | Pertanyaan apa adanya |
-   | RAG aktif, ada hasil | `SYSTEM_PROMPT` | `Konteks:\n[sumber]\nteks ...\n\nPertanyaan: ...` |
-   | RAG aktif, tanpa hasil | `NALA_SYSTEM_PROMPT_NO_CONTEXT` | Pertanyaan apa adanya |
+   | Dengan reranking | 20 | 3 teratas hasil cross-encoder |
+   | Tanpa reranking, `hybrid` | 3 | 3 |
+   | Tanpa reranking, `bm25`/`vector` | 6 | 6 |
 
-   Setiap chunk konteks diberi label nama file sumber (`[SOP-xxx.md]`) agar model tidak mencampur isi antar-dokumen. Konteks hanya disisipkan ke giliran terakhir, bukan ke riwayat.
-4. Kirim ke Ollama `POST /api/chat` (`stream: true`) dengan urutan pesan: system → riwayat → pesan terakhir, memakai `httpx.stream()` sehingga respons dibaca sambil berjalan.
-5. Parse respons NDJSON baris per baris, *yield* `message.content` tiap chunk begitu diterima (token langsung diteruskan ke browser), berhenti saat `done: true`.
+   `hybrid` menggabungkan BM25 dan k-NN (masing-masing 20 kandidat) dengan **Reciprocal Rank Fusion** (`1/(60 + peringkat)`). Error `httpx.HTTPError` → konteks kosong, chat tetap jalan.
+3. Pilih system prompt: `NALA_SYSTEM_PROMPT_RAG_OFF` (RAG dimatikan), `SYSTEM_PROMPT` (ada konteks; tiap chunk diberi label `[nama file]`), atau `NALA_SYSTEM_PROMPT_NO_CONTEXT` (RAG aktif tanpa hasil).
+4. Stream ke Ollama `/api/chat`; token diteruskan ke browser sebagai `text/plain`.
+5. Trace Langfuse `chat_stream` dengan span `retrieval`, `rerank`, dan generation `llm_generate_stream`.
 
-### 4.4 `GET /upload`
+`/chat/stream` **tidak** melakukan audit log, tidak memakai cache, dan tidak memiliki tool SQL.
 
-Menampilkan halaman Knowledge Base: form upload dan daftar dokumen tersimpan.
+### 4.4 `POST /chat` (Agent)
 
-- **Response:** `text/html` — render `app/templates/upload.html` dengan `documents` = nama file `.md`/`.txt`/`.pdf` di `KNOWLEDGE_BASE_DIR` (urut alfabetis, tanpa subfolder).
+**Request Body** (tidak ada field role/user — identitas hanya dari sesi):
+```json
+{ "message": "Berapa pengajuan kredit yang ditolak?", "history": [] }
+```
+
+**Response:**
+```json
+{
+  "reply": "Ada 8 pengajuan kredit berstatus ditolak ...",
+  "tool_used": "sql",
+  "sources": []
+}
+```
+
+| Field | Nilai |
+|---|---|
+| `reply` | Jawaban akhir agent (Markdown) |
+| `tool_used` | `"rag"`, `"sql"`, `"mixed"` (keduanya), `"none"`, atau `"cache"`. Hanya tool yang **diizinkan** RBAC yang dihitung |
+| `sources` | Nama file dokumen hasil `cari_dokumen_sop` (tanpa duplikat, urutan kemunculan). Kosong untuk jawaban dari cache |
+
+**Pemrosesan:**
+1. Rate limit → sesi (`401` bila tidak ada).
+2. Bila `history` kosong: cek cache Redis dengan key `sha256(pertanyaan|role|"hybrid"|True)`. Hit → audit `tool_dipanggil="cache"` → response `tool_used="cache"` tanpa menjalankan agent.
+3. Bangun agent per request; state awal: system prompt agent + 10 pesan terakhir (riwayat hanya `user`/`assistant`), `role` dari sesi, `called_tools: []`.
+4. Setelah agent selesai: satu baris `audit_log` per entri `called_tools` (atau satu baris tanpa tool), simpan jawaban ke cache (hanya bila `history` kosong), hitung `tool_used` dan `sources`.
+5. Trace Langfuse `chat_agent` dengan generation `agent_call_model` dan span `agent_tool:<nama>`.
 
 ### 4.5 `POST /upload`
 
-Menyimpan dokumen baru ke knowledge base lalu langsung meng-*ingest*-nya.
+- **Request:** `multipart/form-data`, field `file` (`.md`, `.txt`, `.pdf`; lainnya → `400`).
+- **Pemrosesan:** nama file disanitasi (`os.path.basename`), file disimpan (menimpa nama yang sama), lalu `ingest_queue.enqueue("app.jobs.ingest_document_job", path)`.
+- **Response:** halaman Knowledge Base dengan pesan *"… sedang diproses di background (job ID: …)"*. Bila Redis tidak terjangkau, file tetap tersimpan dan pengguna diminta mengunggah ulang atau menjalankan DAG Airflow.
 
-- **Request:** `multipart/form-data`, field `file`.
-- **Validasi:**
+### 4.6 Data Operasional
 
-  | Kondisi | Hasil |
-  |---|---|
-  | Ekstensi bukan `.md`, `.txt`, atau `.pdf` | `400 Bad Request` |
-  | Field `file` tidak ada | `422 Unprocessable Entity` |
-
-- **Pemrosesan:**
-  1. Nama file disanitasi dengan `os.path.basename()` (mencegah *path traversal*).
-  2. File disimpan ke `KNOWLEDGE_BASE_DIR` — **menimpa** file dengan nama sama.
-  3. `ingest_document()` dijalankan (lihat §6).
-  4. Jika ingest gagal karena `httpx.HTTPError` (Ollama/OpenSearch tidak terjangkau), file tetap tersimpan dan pengguna diminta mengunggah ulang atau menjalankan DAG `ingest_documents` di Airflow setelah layanan aktif.
-- **Response:** `200 OK`, `text/html` — halaman Knowledge Base dengan pesan status dan daftar dokumen terbaru.
+- `GET /data-operasional?kredit_page=N&klaim_page=M` — dua tabel dengan paginasi terpisah (10 baris/halaman, terbaru di atas), dibaca dengan role `nala_readonly`.
+- `POST /data-operasional/pengajuan-kredit` — field `nasabah_id`, `nama_nasabah`, `jumlah_pengajuan`, `status`, `tanggal_pengajuan`, `alasan_penolakan` (opsional).
+- `POST /data-operasional/klaim-asuransi` — field `nasabah_id`, `nama_nasabah`, `jenis_klaim`, `jumlah_klaim`, `status`, `tanggal_klaim`.
+- INSERT memakai role `nala_writer` dan parameter `%s`. Pelanggaran constraint → `400`; database tidak terjangkau → `503`.
 
 ---
 
-## 5. Manajemen Konteks Percakapan
+## 5. Agent & Tool
 
-- **Penyimpanan:** riwayat percakapan disimpan **di memori browser** (variabel `conversation` pada JavaScript). Tidak ada database maupun session di sisi server — server bersifat *stateless*.
-- **Windowing:** hanya **10 pesan terakhir** yang dikirim ke model untuk mencegah prompt membengkak dan menjaga latensi tetap stabil. Pemangkasan dilakukan di server; browser tetap mengirim seluruh riwayat.
-- **Indikator UI:** setelah riwayat mencapai 10 pesan (pesan berikutnya mulai memotong riwayat terlama), UI menampilkan catatan bahwa hanya 10 pesan terakhir yang menjadi konteks.
-- **Retrieval:** pencarian dokumen hanya memakai pesan user terakhir, bukan seluruh riwayat.
-- **Reset:** tombol Reset mengosongkan riwayat setelah konfirmasi pengguna.
-- **Konsekuensi:** menutup atau me-*refresh* halaman akan menghapus seluruh riwayat percakapan.
+### 5.1 Graph
 
----
+`call_model` memanggil Ollama `/api/chat` (non-streaming) dengan **`ALL_TOOLS`** untuk semua role. Bila respons berisi `tool_calls`, graph lanjut ke `call_tool`, lalu kembali ke `call_model`; tanpa `tool_calls` → selesai.
 
-## 6. Knowledge Base & Pipeline Ingest
+State: `messages` (akumulatif), `role` (dari sesi), `called_tools` (akumulatif, `[{tool, diizinkan, sumber?}]`).
 
-### 6.1 Format & Ekstraksi
+### 5.2 Tool
 
-| Format | Cara Ekstraksi | Cara Chunking |
-|---|---|---|
-| `.md` | Dibaca sebagai teks | Per *heading* (`#` s.d. `######`); section > 500 karakter dipecah lagi per ukuran tetap |
-| `.txt` | Dibaca sebagai teks | Ukuran tetap |
-| `.pdf` | `pypdf`, teks per halaman digabung. **Tanpa OCR** — PDF hasil scan menghasilkan teks kosong | Ukuran tetap |
+| Tool | Fungsi | Role | Hasil |
+|---|---|---|---|
+| `cari_dokumen_sop(query)` | Hybrid search 20 kandidat → rerank 3 (atau 3 teratas bila reranker mati) | Semua | Teks gabungan chunk + daftar sumber |
+| `query_data_operasional(tabel, mode, status?, nasabah_id?)` | `hitung_per_status` atau `detail_nasabah` (maks. 20 baris) pada `pengajuan_kredit`/`klaim_asuransi` | `staff_finance`, `supervisor` | Teks ringkas (Rupiah, tanggal ISO) |
 
-Chunking ukuran tetap: **500 karakter** dengan **overlap 50 karakter**.
+**RBAC ditegakkan di `call_tool`, saat eksekusi**: semua role ditawari kedua tool, tetapi `query_data_operasional` untuk role di luar `SQL_ALLOWED_ROLES` **tidak dieksekusi**; model menerima pesan `"Akses ditolak: ..."` dan percobaan itu tercatat `diizinkan=False`. Argumen tidak valid (`TypeError`/`KeyError`) dikembalikan ke model sebagai teks agar bisa diperbaiki.
 
-### 6.2 Index OpenSearch
+### 5.3 System Prompt Agent
 
-- **Nama index:** `nala-docs` (dibuat otomatis oleh `ensure_index()` bila belum ada).
-- **Mapping:**
-
-  | Field | Tipe | Keterangan |
-  |---|---|---|
-  | `text` | `text` | Isi chunk |
-  | `embedding` | `knn_vector`, 768 dimensi | HNSW, engine `nmslib`, `cosinesimil` |
-  | `metadata` | `object` | `{"source": "<nama file>"}` |
-
-- **ID dokumen:** `<nama file>-<urutan chunk>` (di-*URL-encode*). Ingest ulang file yang sama menimpa chunk dengan ID yang sama.
-- **Refresh:** setiap `PUT` memakai `refresh=true` sehingga chunk langsung bisa dicari.
-
-### 6.3 Jalur Ingest
-
-| Jalur | Pemicu | Folder Sumber |
-|---|---|---|
-| Upload | `POST /upload` — satu file, langsung setelah disimpan | `/code/app/knowledge-base` di container `api` |
-| Airflow DAG `ingest_documents` | Manual dari UI/CLI Airflow (`schedule=None`) — seluruh folder | `/opt/airflow/knowledge-base` di container `airflow` |
-
-Kedua path di atas adalah **bind mount dari folder host yang sama, `./app/knowledge-base`**. Dengan begitu dokumen hasil upload tersimpan permanen di host, ikut di-*ingest* ulang oleh DAG, dan dokumen yang disalin langsung ke folder tersebut juga tampil di halaman Knowledge Base. Kedua jalur memakai fungsi yang sama (`app/ingest.py`) dan menulis ke index yang sama.
+`NALA_SYSTEM_PROMPT_AGENT` menjelaskan kedua tool, mewajibkan penggunaan tool untuk pertanyaan SOP/data, melarang mengarang nama/ID/status/jumlah nasabah, melarang mengaku punya data operasional tanpa hasil tool, dan mewajibkan pesan "Akses ditolak: ..." diteruskan apa adanya.
 
 ---
 
-## 7. Konfigurasi
+## 6. Knowledge Base & Retrieval
 
-Konfigurasi dibaca dari *environment variable*; untuk `OllamaClient` berlaku fallback **argumen konstruktor → environment variable → nilai default**.
+### 6.1 Ekstraksi & Chunking
 
-| Variabel | Default | Keterangan |
+| Format | Ekstraksi | Chunking |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Alamat server Ollama (chat & embedding). Pada Docker Compose: `http://ollama:11434` |
-| `OLLAMA_MODEL` | `llama3.2:3b` | Model untuk endpoint chat |
-| `OPENSEARCH_BASE_URL` | `http://localhost:9200` | Alamat OpenSearch. Pada Docker Compose: `http://opensearch:9200` |
-| `KNOWLEDGE_BASE_DIR` | `app/knowledge-base` | Folder dokumen yang ditampilkan & menjadi tujuan upload. Pada Docker Compose: `/code/app/knowledge-base` (bind mount dari `./app/knowledge-base`) |
+| `.md` | Teks | Per heading (`#`–`######`); section > 500 karakter dipecah lagi (500, overlap 50) |
+| `.txt` | Teks | 500 karakter, overlap 50 |
+| `.pdf` | `pypdf` per halaman (tanpa OCR) | 500 karakter, overlap 50 |
 
-**Konstanta dalam kode:**
+### 6.2 Index OpenSearch `nala-docs`
 
-| Konstanta | Nilai | Lokasi |
-|---|---|---|
-| `HISTORY_WINDOW` | `10` pesan | `app/main.py` |
-| Jumlah chunk konteks (`top_k`) | `6` | `app/main.py` |
-| Nama index | `nala-docs` | `app/main.py`, `app/ingest.py` |
-| Model embedding | `nomic-embed-text` | `app/embeddings.py` |
-| Dimensi vektor | `768` | `app/vector_store.py` |
-| Ukuran / overlap chunk | `500` / `50` karakter | `app/ingest.py` |
-| Ekstensi yang didukung | `.md`, `.txt`, `.pdf` | `app/main.py`, `app/ingest.py` |
-| Timeout Ollama chat/generate | `120` detik | `app/ollama_client.py` |
-| Timeout Ollama embedding | `60` detik | `app/embeddings.py` |
-| Timeout OpenSearch | `30` detik | `app/vector_store.py` |
-
----
-
-## 8. Perilaku Model (System Prompt)
-
-`SYSTEM_PROMPT` mendefinisikan lima aspek:
-
-| Aspek | Ketentuan |
+| Field | Tipe |
 |---|---|
-| **Role** | Asisten pribadi pegawai perbankan yang serba tahu teknologi: software, hardware, jaringan, cloud, keamanan siber, data & AI, teknologi perbankan (core banking, mobile/internet banking, sistem pembayaran, fintech) |
-| **Task** | Menjawab akurat dan jelas dikaitkan dengan konteks kerja bank; membantu pekerjaan sehari-hari (aplikasi kantor, troubleshooting, pengolahan data, otomasi); memakai analogi; memberi langkah praktis; mengingatkan praktik keamanan informasi |
-| **Context** | Pengguna beragam (frontliner, operasional, marketing, analis, manajemen, tim IT); jawaban ringkas; info yang cepat berubah disampaikan sebagai perkiraan disertai saran verifikasi |
-| **Persona** | Ramah, sabar, antusias; gaya bahasa Gen-Z; menutup setiap jawaban dengan pantun pendek |
-| **Constraints** | Dilarang mengarang fakta; menolak permintaan ilegal/merusak; mengakui diri sebagai AI; maksimal 50 kalimat; **menolak pertanyaan di luar lingkup teknologi dan SOP**; tidak meminta/memproses data rahasia nasabah maupun kredensial; untuk kebijakan internal/regulasi (OJK/BI) merujuk ke SOP atau unit terkait |
+| `text` | `text` (dipakai BM25) |
+| `embedding` | `knn_vector` 768 dimensi, HNSW, nmslib, `cosinesimil` |
+| `metadata` | `object` — `{"source": "<nama file>"}` |
 
-**Varian:**
+ID dokumen `<nama file>-<urutan>`; ingest ulang menimpa chunk dengan ID sama. `refresh=true` di setiap PUT.
 
-| Konstanta | Dipakai Saat | Tambahan Aturan |
+### 6.3 Metode Pencarian
+
+| Metode | Cara | Catatan hasil uji (lihat [pengujian](./pengujian.md)) |
 |---|---|---|
-| `NALA_SYSTEM_PROMPT_NO_CONTEXT` | RAG aktif tapi tidak ada chunk yang ditemukan / retrieval gagal | Jawab dari pengetahuan umum dan sebutkan bahwa jawaban akan lebih akurat setelah dokumen SOP diunggah |
-| `NALA_SYSTEM_PROMPT_RAG_OFF` | Pengguna mematikan switch RAG | Jawab dari pengetahuan umum tanpa merujuk SOP; untuk prosedur internal sarankan mengaktifkan kembali "Pakai RAG" |
+| Vector | k-NN embedding `nomic-embed-text` | Lemah untuk korpus bahasa Indonesia |
+| BM25 | Query `match` pada `text` | Paling andal dan tercepat pada uji coba |
+| Hybrid | BM25 + k-NN, digabung RRF (`rrf_k=60`) | Default UI & agent |
+| + Rerank | Cross-encoder `ms-marco-MiniLM-L-6-v2` | Membantu sebagian; ±300 ms di CPU |
 
----
+### 6.4 Jalur Ingest
 
-## 9. Antarmuka Pengguna
-
-### 9.1 Halaman Chat (`/`)
-
-**Elemen halaman:**
-- **Top bar:** logo & nama NALA, navigasi (Chat | Knowledge Base), jumlah pesan, tombol Reset.
-- **Area percakapan:** mengisi tinggi layar dan dapat di-*scroll*, auto-scroll ke pesan terbaru. Saat kosong menampilkan layar sambutan (logo + sapaan).
-- **Pesan:** pesan user berupa *bubble* di kanan; balasan NALA tanpa *bubble* dengan avatar dan nama.
-- **Composer:** kotak input, switch **"Pakai RAG (cari dari dokumen)"** (default aktif), tombol Kirim, catatan windowing, dan disclaimer *"NALA bisa keliru. Untuk prosedur resmi, selalu cek kembali ke SOP internal."*
-
-**Logika frontend:**
-- **Streaming render:** token tampil segera setelah dihasilkan Ollama; respons dibaca via `ReadableStream` reader dan `TextDecoder`, elemen balasan diperbarui setiap chunk masuk.
-- **Indikator status:** teks "sedang mengetik" beranimasi sebelum chunk pertama; input & tombol dikunci selama menunggu (tombol menampilkan spinner); kursor berkedip selama stream berlangsung.
-- **Penanganan error:** status HTTP non-2xx atau error jaringan menampilkan pesan *"Gagal mendapatkan balasan (...). Coba lagi."* di tempat balasan.
-- **Formatting ringan:** `**teks**` → tebal, `*teks*` → miring, baris baru → `<br>`.
-- **Keamanan:** seluruh teks di-*escape* melalui `escapeHtml()` sebelum disisipkan ke DOM untuk mencegah XSS. Formatting markdown diterapkan **setelah** proses escape.
-
-### 9.2 Halaman Knowledge Base (`/upload`)
-
-- Form upload (`accept=".md,.txt,.pdf"`) yang dikirim sebagai `multipart/form-data` biasa — tanpa JavaScript.
-- Pesan status hasil upload/ingest.
-- Daftar nama dokumen di `KNOWLEDGE_BASE_DIR`.
-
-### 9.3 Tampilan
-
-- Responsif (breakpoint 600px): nama brand dan label tombol Reset disembunyikan di layar sempit.
-- Menghormati `prefers-reduced-motion` (animasi dimatikan).
-
----
-
-## 10. Deployment
-
-### 10.1 Docker Compose
-
-| Service | Port | Keterangan |
+| Jalur | Pemicu | Eksekutor |
 |---|---|---|
-| `ollama` | 11434 | Image `ollama/ollama:latest`; volume `ollama_data` mem-*persist* model |
-| `opensearch` | 9200 | Image `opensearchproject/opensearch:2.11.0`; single-node, **security plugin dimatikan**, heap 512 MB; volume `opensearch_data` |
-| `opensearch-dashboards` | 5601 | UI web untuk melihat index & dokumen; security plugin dimatikan |
-| `api` | 8000 | Build dari `./app/Dockerfile`; bind mount `./app/knowledge-base` → `/code/app/knowledge-base`; `depends_on: ollama, opensearch` |
-| `airflow` | 8080 | Image `apache/airflow:2.10.2`, mode `standalone`; me-mount `./airflow/dags`, `./app` (ke `dags/app`), dan `./app/knowledge-base` (ke `/opt/airflow/knowledge-base`); memasang `pypdf` & `httpx` via `_PIP_ADDITIONAL_REQUIREMENTS` |
+| Upload | `POST /upload` | Worker RQ (`nala-worker`), antrian `ingest`, timeout job 30 menit; setelah selesai cache jawaban dikosongkan |
+| Airflow | DAG `ingest_documents` (manual) | Container `airflow`, seluruh folder `/opt/airflow/knowledge-base` |
 
-`depends_on` hanya mengatur urutan start, tidak menunggu service siap.
+Folder knowledge base adalah bind mount `./app/knowledge-base` yang sama di `api`, `worker`, dan `airflow`.
 
-**Menjalankan:**
-```bash
-docker compose up -d --build
-docker compose exec ollama ollama pull llama3.2:3b
-docker compose exec ollama ollama pull nomic-embed-text
-```
+---
 
-| Aplikasi | URL |
+## 7. Database Data Operasional (`nala_operasional`)
+
+### 7.1 Tabel
+
+**`pengajuan_kredit`**
+
+| Kolom | Tipe | Keterangan |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `nasabah_id` | VARCHAR(10) | mis. `NSB0003` |
+| `nama_nasabah` | VARCHAR(100) | |
+| `jumlah_pengajuan` | NUMERIC(15,2) | Rupiah |
+| `status` | VARCHAR(20) | CHECK: `pending`, `disetujui`, `ditolak`, `pencairan` |
+| `tanggal_pengajuan` | DATE | |
+| `alasan_penolakan` | TEXT | Hanya bila `ditolak` |
+
+**`klaim_asuransi`**
+
+| Kolom | Tipe | Keterangan |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `nasabah_id` | VARCHAR(10) | |
+| `nama_nasabah` | VARCHAR(100) | |
+| `jenis_klaim` | VARCHAR(50) | mis. Kesehatan, Kendaraan, Properti, Jiwa |
+| `jumlah_klaim` | NUMERIC(15,2) | |
+| `status` | VARCHAR(20) | CHECK: `pending`, `diproses`, `disetujui`, `ditolak` |
+| `tanggal_klaim` | DATE | |
+
+**`audit_log`**
+
+| Kolom | Tipe | Keterangan |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `waktu` | TIMESTAMPTZ | default `now()` |
+| `user_id` | VARCHAR(50) | dari sesi |
+| `role` | VARCHAR(20) | dari sesi |
+| `pertanyaan` | TEXT | |
+| `tool_dipanggil` | VARCHAR(50) | NULL bila tanpa tool; `cache` untuk cache hit |
+| `akses_diizinkan` | BOOLEAN | |
+| `ringkasan_data_diakses` | TEXT | Belum diisi aplikasi |
+
+### 7.2 Role Database (least privilege)
+
+| Role | Hak | Dipakai oleh |
+|---|---|---|
+| `nala_admin` | Pemilik database (inisialisasi) | Seed, Adminer (admin) |
+| `nala_readonly` | SELECT `pengajuan_kredit`, `klaim_asuransi` | Tool SQL, tabel halaman data operasional |
+| `nala_writer` | INSERT kedua tabel (+ sequence) | Form data operasional |
+| `nala_app` | INSERT + SELECT `audit_log` saja (tanpa UPDATE/DELETE) | `app/audit.py` |
+
+`db/seed.sql` hanya dijalankan saat volume `postgres_data` masih kosong. Seed berisi 2 pengajuan kredit dan 1 klaim; data tambahan (50 baris per tabel) diinput langsung ke database berjalan.
+
+---
+
+## 8. Redis
+
+| Pemakaian | Key / Nama | Detail |
+|---|---|---|
+| Cache jawaban agent | `nala:answer:<sha256>` | TTL `CACHE_TTL_SECONDS` (3600); `setex`; dikosongkan lewat `scan_iter` setelah ingest |
+| Rate limit | `nala:ratelimit:<bucket>:<ip>:<window>` | `INCR` + `EXPIRE` hanya saat count = 1 |
+| Antrian ingest | `rq:*` (antrian `ingest`) | Diproses service `worker` |
+
+Redis dibatasi 256 MB dengan kebijakan `allkeys-lru`, tanpa volume (data boleh hilang saat restart). Semua fungsi cache dan rate limit bersifat **fail-open**: bila Redis mati, NALA tetap menjawab.
+
+---
+
+## 9. Keamanan (ringkas)
+
+Rincian ada di [keamanan-rbac-audit.md](./keamanan-rbac-audit.md).
+
+- Sesi cookie bertanda tangan (`SESSION_SECRET`, berlaku 8 jam); `user_id`/`role` tidak pernah dibaca dari body request.
+- RBAC tool SQL di level eksekusi; audit log append-only.
+- SQL tool: whitelist tabel/mode/status, nilai lewat parameter; tidak ada SQL buatan LLM.
+- XSS: teks user via `textContent`; Markdown balasan disanitasi DOMPurify; nama file sumber di-escape.
+- Upload: sanitasi nama file, validasi ekstensi.
+- Rate limiting per IP (fail-open).
+
+---
+
+## 10. Konfigurasi
+
+| Variabel | Default (kode) | Nilai di docker-compose | Dipakai |
+|---|---|---|---|
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | `http://ollama:11434` | api, worker, airflow |
+| `OLLAMA_MODEL` | `llama3.2:3b` | `qwen2.5:7b` | api |
+| `OPENSEARCH_BASE_URL` | `http://localhost:9200` | `http://opensearch:9200` | api, worker, airflow |
+| `KNOWLEDGE_BASE_DIR` | `app/knowledge-base` | `/code/app/knowledge-base` | api, worker |
+| `RERANK_ENABLED` | `true` | – | api |
+| `HF_HOME` | – | `/app/.cache/huggingface` | api (cache model reranker) |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | – / – / `http://localhost:3000` | key project / `http://langfuse:3000` | api |
+| `POSTGRES_READONLY_DSN` | `…nala_readonly…@localhost` | `…@postgres:5432/nala_operasional` | api |
+| `POSTGRES_WRITER_DSN` | `…nala_writer…@localhost` | `…@postgres…` | api |
+| `POSTGRES_APP_DSN` | `…nala_app…@localhost` | `…@postgres…` | api |
+| `POSTGRES_ADMIN_PASSWORD` | – | `changeme_dev_only` | postgres |
+| `SESSION_SECRET` | `nala-dev-session-secret-change-me` | `${SESSION_SECRET:-…}` | api |
+| `REDIS_URL` | `redis://redis:6379/0` | worker: `redis://redis:6379/0` | api, worker |
+| `CACHE_TTL_SECONDS` | `3600` | – | api |
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` | `20` / `60` | – | api |
+
+**Konstanta penting:** `HISTORY_WINDOW=10`, `PAGE_SIZE=10`, `SQL_ALLOWED_ROLES={"staff_finance","supervisor"}`, batas upload 5/menit, batas data operasional 10/menit, ukuran chunk 500/overlap 50, timeout Ollama chat stream 120 s, agent 60 s, embedding 60 s, OpenSearch 30 s, Postgres connect 5 s.
+
+---
+
+## 11. Antarmuka Pengguna
+
+| Halaman | Isi |
 |---|---|
-| NALA (chat & knowledge base) | `http://localhost:8000` |
-| OpenSearch Dashboards | `http://localhost:5601` |
-| Airflow (user `admin`, password dicetak di log saat start pertama) | `http://localhost:8080` |
+| `/login` | Form login + daftar akun demo |
+| `/` (Chat) | Top bar (navigasi, banner "Masuk sebagai …", jumlah pesan, Reset), area percakapan bubble, composer dengan switch **Pakai RAG**, **BM25**, **Vector**, **Rerank hasil**, **Pakai Agent** |
+| `/upload` | Form upload, pesan status (job ID), daftar dokumen |
+| `/data-operasional` | Form tambah pengajuan kredit & klaim asuransi, tabel berpaginasi |
 
-### 10.2 Menjalankan Lokal (tanpa Docker)
+**Perilaku UI chat:**
+- Pesan berupa bubble (`.msg-row > .bubble`): user di kanan, NALA di kiri dengan avatar yang berdenyut saat menunggu.
+- Typing indicator tiga titik sebelum token pertama; kursor berkedip selama streaming.
+- Balasan dirender sebagai Markdown (`marked`) lalu disanitasi (`DOMPurify`).
+- Mode agent: badge sumber jawaban (📄 Dokumen SOP, 🗄️ Data operasional, ⚡ Dari cache) dan daftar **Sumber dokumen**.
+- Saat mode agent aktif, switch retrieval dinonaktifkan (tetap terlihat).
+- Tema gelap otomatis mengikuti preferensi OS/browser; tema terang tetap default.
+- Responsif: breakpoint 600px dan 480px (kontrol composer menjadi satu kolom).
+- Menghormati `prefers-reduced-motion`.
 
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+---
+
+## 12. Deployment
+
+### 12.1 Service Docker Compose
+
+| Service | Port host | Image / Build | Catatan |
+|---|---|---|---|
+| `ollama` | 11434 | `ollama/ollama:latest` | Volume `ollama_data` |
+| `opensearch` | 9200 | `opensearchproject/opensearch:2.11.0` | Single node, security plugin **dimatikan**, heap 512 MB, volume `opensearch_data` |
+| `opensearch-dashboards` | 5601 | 2.11.0 | UI index |
+| `api` | 8000 | Build `./app` | Menunggu postgres & redis *healthy* |
+| `worker` | – | Build `./app` (image sama) | `rq worker ingest` |
+| `airflow` | 8080 | `apache/airflow:2.10.2` | Standalone; DAG manual |
+| `langfuse-db` | – | `postgres:15-alpine` | Metadata Langfuse |
+| `langfuse` | 3000 | `langfuse/langfuse:2` | UI observability |
+| `postgres` | 5432 | `postgres:16` | `nala_operasional`, seed otomatis, healthcheck |
+| `redis` | 6379 | `redis:7-alpine` | 256 MB LRU, healthcheck, tanpa volume |
+| `redisinsight` | 5540 | `redis/redisinsight:latest` | Koneksi ke Redis sudah dikonfigurasi |
+| `adminer` | 8081 | `adminer:latest` | GUI Postgres |
+
+Langkah menjalankan, reset, dan troubleshooting ada di [panduan-instalasi-dan-operasional.md](./panduan-instalasi-dan-operasional.md).
+
+### 12.2 Image `api`/`worker`
+
+`app/Dockerfile`: `python:3.12-slim`, install `requirements.txt` (termasuk torch CPU), lalu layer terpisah `itsdangerous==2.2.0` dan `redis==5.0.8 rq==1.16.2` agar layer torch tetap ter-*cache*. Kode di-*copy* ke image (bukan di-mount), sehingga **setiap perubahan kode, template, atau CSS memerlukan rebuild** (`docker compose up -d --build api`).
+
+---
+
+## 13. Batasan & Catatan Implementasi
+
+1. **Error Ollama saat streaming tidak terdeteksi** — `chat_stream()` tidak memeriksa status HTTP; model yang belum di-*pull* menghasilkan balasan kosong.
+2. **Chunk lama tidak dibersihkan** saat dokumen di-ingest ulang dengan versi lebih pendek; belum ada fitur hapus dokumen.
+3. **PDF hasil scan tidak terbaca** (tanpa OCR).
+4. **Tidak ada ambang skor minimum retrieval**, sehingga pertanyaan di luar knowledge base tetap mendapat konteks tak relevan.
+5. **Cache jawaban agent**: data operasional bisa usang hingga 1 jam (cache tidak dikosongkan saat data diinput); cache hit tidak membawa daftar sumber; cache hit atas jawaban yang sebelumnya ditolak tercatat `akses_diizinkan = true` dengan `tool_dipanggil = "cache"`.
+6. **Rate limit per IP**: di balik Docker/proxy semua pengguna tampil dengan IP gateway yang sama sehingga berbagi satu kuota.
+7. **Dokumen SOP belum dibatasi per role** — RBAC hanya untuk data operasional.
+8. **Nama tool > 50 karakter** (hasil karangan model) gagal ditulis ke `audit_log` (hanya tercatat di log aplikasi).
+9. **`app/eval_testset.py` belum ada**, sehingga `python -m app.run_evaluation` gagal dijalankan sampai test set dibuat.
+10. **Knowledge base memuat dokumen duplikat/bertentangan** (dua SOP pengajuan kredit dengan rasio DSR 40% vs 50%); dokumen di `tambahan dokumen/` belum di-ingest.
+11. **Kredensial development** (password demo plaintext, password role database, kunci Langfuse) tertulis di kode/compose — hanya untuk lingkungan lokal.
+12. **OpenSearch, Dashboards, Airflow, RedisInsight, Adminer** tidak memakai autentikasi aplikasi NALA; aksesnya harus dibatasi di level jaringan.
+13. **DAG ganda**: `app/airflow/ingest_documents_dag.py` adalah salinan yang tidak dipakai Airflow.
+
+---
+
+## 14. Struktur Direktori
+
 ```
-Prasyarat: dijalankan dari root project (path `app/static`, `app/templates`, `app/knowledge-base` relatif terhadap working directory); Ollama berjalan di `localhost:11434` dengan model `llama3.2:3b` dan `nomic-embed-text` sudah di-*pull*; OpenSearch berjalan di `localhost:9200` (opsional — tanpa OpenSearch chat tetap jalan tanpa konteks dokumen).
-
----
-
-## 11. Kebutuhan Non-Fungsional
-
-| Aspek | Ketentuan / Kondisi Saat Ini |
-|---|---|
-| **Privasi** | Inferensi, embedding, dan penyimpanan vektor berjalan lokal; tidak ada data keluar ke pihak ketiga |
-| **Persistensi** | Riwayat chat tidak disimpan (hilang saat halaman ditutup). Dokumen knowledge base tersimpan di host (`./app/knowledge-base`); index OpenSearch dan model Ollama di-*persist* lewat named volume |
-| **Autentikasi** | Belum ada — baik aplikasi NALA, halaman upload, maupun OpenSearch/Dashboards (security plugin dimatikan) |
-| **Ketahanan** | Chat tetap berjalan tanpa konteks bila Ollama embedding/OpenSearch gagal; upload tetap menyimpan file bila ingest gagal |
-| **Timeout** | 120 detik (chat), 60 detik (embedding), 30 detik (OpenSearch) |
-| **Skalabilitas** | Backend stateless untuk chat; throughput dibatasi kapasitas Ollama. Dokumen upload disimpan di folder host lewat bind mount, sehingga instance di host lain perlu penyimpanan bersama |
-| **Logging & Monitoring** | Log bawaan Uvicorn dan Airflow; endpoint `/health` hanya memeriksa proses API |
-| **Keamanan Upload** | Nama file disanitasi, ekstensi divalidasi di server; belum ada batas ukuran file |
-
----
-
-## 12. Batasan & Catatan Implementasi
-
-1. **Error dari Ollama saat chat tidak terdeteksi.** `chat_stream()` tidak memanggil `raise_for_status()`; bila model belum di-*pull* atau Ollama mengembalikan error, balasan tampil kosong tanpa pesan error.
-2. **Chunk lama tidak dibersihkan.** Ingest ulang file yang versinya lebih pendek menyisakan chunk lama dengan nomor urut lebih tinggi; belum ada fitur hapus dokumen dari UI maupun index.
-3. **PDF hasil scan tidak terbaca** karena belum ada OCR.
-4. **Encoding file teks.** `extract_text()` membuka file tanpa `encoding="utf-8"`; saat dijalankan langsung di Windows, dokumen UTF-8 berkarakter khusus dapat gagal dibaca.
-5. **DAG ganda.** `app/airflow/ingest_documents_dag.py` merupakan salinan `airflow/dags/ingest_documents_dag.py` dan tidak dipakai oleh Airflow.
-6. **Kualitas jawaban terbatas oleh model.** `llama3.2:3b` adalah model kecil (3 miliar parameter) — cocok untuk perangkat modest, namun akurasinya di bawah model besar.
-7. **Tidak ada retry** ke Ollama/OpenSearch.
-8. **Method `generate()` belum dipakai.** `OllamaClient.generate()` (endpoint `/api/generate`, non-streaming) tersedia tetapi belum dipanggil.
-9. **Tanpa rate limiting** dan tanpa batas ukuran upload.
-
----
-
-## 13. Struktur Direktori
-
-```
-NALA/
-├── airflow/
-│   └── dags/
-│       └── ingest_documents_dag.py   # DAG Airflow "ingest_documents"
+Nala/
+├── airflow/dags/ingest_documents_dag.py   # DAG Airflow "ingest_documents" (manual)
 ├── app/
-│   ├── airflow/
-│   │   └── ingest_documents_dag.py   # Salinan DAG (tidak dipakai Airflow)
-│   ├── knowledge-base/               # Dokumen SOP untuk RAG (di-mount ke api & airflow)
+│   ├── airflow/ingest_documents_dag.py    # Salinan DAG (tidak dipakai)
+│   ├── knowledge-base/                    # Dokumen SOP (bind mount ke api, worker, airflow)
 │   ├── static/
-│   │   ├── NALA_Logov2.jpg           # Logo & favicon
-│   │   └── style.css                 # Styling halaman chat & knowledge base
-│   ├── templates/
-│   │   ├── chat.html                 # UI chat + logika frontend
-│   │   └── upload.html               # Halaman upload & daftar dokumen
-│   ├── Dockerfile                    # Image service API
-│   ├── embeddings.py                 # Embedding teks via Ollama
-│   ├── ingest.py                     # Ekstraksi, chunking, indexing dokumen
-│   ├── main.py                       # Endpoint FastAPI
-│   ├── ollama_client.py              # Client HTTP ke Ollama
-│   ├── system_prompt.py              # Persona & batasan asisten (+ varian)
-│   ├── vector_store.py               # Client REST OpenSearch (k-NN)
+│   │   ├── NALA_Logov2.jpg                # Logo & favicon
+│   │   ├── style.css                      # Styling semua halaman (token warna, tema gelap, responsif)
+│   │   └── vendor/                        # marked.umd.js, purify.min.js (lokal, tanpa CDN)
+│   ├── templates/                         # login, chat, upload, data_operasional
+│   ├── tools/
+│   │   ├── rag_tool.py                    # Tool cari_dokumen_sop
+│   │   └── sql_tool.py                    # Tool query_data_operasional
+│   ├── agent.py                           # Agent LangGraph + RBAC
+│   ├── audit.py                           # Audit log
+│   ├── auth.py                            # User demo & sesi
+│   ├── cache.py                           # Cache jawaban Redis
+│   ├── db.py                              # Koneksi Postgres
+│   ├── embeddings.py                      # Embedding via Ollama
+│   ├── evaluation.py / llm_judge.py / run_evaluation.py   # Evaluasi retrieval & jawaban
+│   ├── ingest.py                          # Ekstraksi, chunking, indexing
+│   ├── jobs.py / queue.py                 # Job & antrian RQ
+│   ├── main.py                            # Aplikasi FastAPI
+│   ├── ollama_client.py                   # Client Ollama
+│   ├── rate_limit.py                      # Rate limiting
+│   ├── reranker.py                        # Cross-encoder
+│   ├── system_prompt.py                   # System prompt
+│   ├── vector_store.py                    # Client OpenSearch
+│   ├── Dockerfile
 │   └── requirements.txt
-├── dokumentasi/
-│   ├── spesifikasi.md                # Dokumen ini
-│   └── BRD.md                        # Business Requirements Document
-├── tambahan dokumen/                 # Dokumen SOP tambahan yang belum masuk knowledge base
-├── docker-compose.yml                # Orkestrasi 5 service
-└── requirements.txt
+├── db/seed.sql                            # Skema, data contoh, role database
+├── dokumentasi/                           # Dokumen proyek (lihat README.md)
+├── tambahan dokumen/                      # SOP tambahan yang belum di-ingest
+├── ujicoba/                               # Laporan uji coba retrieval
+├── docker-compose.yml                     # Orkestrasi 12 service
+└── requirements.txt                       # Salinan requirements (sama dengan app/)
 ```

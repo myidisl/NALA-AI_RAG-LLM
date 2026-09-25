@@ -1,9 +1,15 @@
 # app/tools/rag_tool.py
+# Tool pencarian dokumen SOP (RAG) untuk agent (app/agent.py): hybrid search BM25 + k-NN di
+# OpenSearch, opsional reranking cross-encoder, lalu mengembalikan teks konteks untuk model
+# beserta daftar nama file sumber (untuk lampiran sumber di UI mode Agent).
 import httpx
 
 from app.embeddings import embed_text
 from app.vector_store import VectorStore
 
+# Definisi tool format Ollama/OpenAI function calling. Model hanya melihat nama, deskripsi, dan
+# parameter ini untuk memutuskan kapan memanggil tool; deskripsi menegaskan pembagian tugas
+# dengan query_data_operasional (aturan/prosedur di sini, angka/status transaksi di tool SQL).
 RAG_TOOL_SCHEMA = {
     "type": "function",
     "function": {
@@ -34,6 +40,7 @@ def rag_search(
 ) -> tuple[str, list[str]]:
     """Return (context text for the model, unique source file names in retrieval order); sources are [] on error or no results."""
     try:
+        # 20 kandidat dari hybrid search (RRF) agar reranker punya pilihan, lalu disaring jadi 3.
         query_embedding = embed_text(query, base_url=ollama_base_url)
         candidates = vector_store.search_hybrid(
             query_text=query, query_embedding=query_embedding, top_k=20

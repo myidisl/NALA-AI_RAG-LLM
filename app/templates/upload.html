@@ -1,4 +1,11 @@
 <!-- app/templates/upload.html -->
+<!-- Halaman Knowledge Base (wajib login): form upload dokumen .md/.txt/.pdf dan daftar dokumen
+     tersimpan. File disimpan ke folder knowledge base, lalu ingest (chunk, embedding, index ke
+     OpenSearch) dijalankan worker RQ di background; halaman ini tidak menunggu proses ingest.
+     Variabel context:
+     - message   (opsional): pesan status upload (termasuk job ID antrian ingest)
+     - documents : list nama file di folder knowledge base
+     - user      : user yang sedang login (untuk banner) -->
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -36,7 +43,7 @@
                 <h2>Upload Dokumen</h2>
                 <p class="hint">Unggah dokumen SOP (.md, .txt, atau .pdf) agar NALA bisa menjawab berdasarkan isinya.</p>
 
-                <!-- Pesan konfirmasi dari server setelah upload (diisi oleh endpoint di Tahap B) -->
+                <!-- Pesan status dari POST /upload (berhasil masuk antrian / gagal masuk antrian) -->
                 {% if message %}
                 <p class="success">{{ message }}</p>
                 {% endif %}
@@ -51,7 +58,7 @@
             <!-- Kartu 2: daftar dokumen yang sudah ada di knowledge base -->
             <section class="upload-card">
                 <h2>Dokumen Tersimpan</h2>
-                <!-- Daftar dokumen di knowledge base (diisi oleh endpoint di Tahap B) -->
+                <!-- Daftar dokumen di folder knowledge base (dari list_knowledge_base_documents() di main.py) -->
                 {% if documents %}
                 <ul class="doc-list">
                     {% for doc in documents %}

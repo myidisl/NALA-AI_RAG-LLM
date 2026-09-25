@@ -1,6 +1,6 @@
 <!-- app/templates/data_operasional.html -->
 <!-- Halaman staff untuk menambah dan melihat data operasional (Postgres nala_operasional).
-     Kontrak dengan endpoint (dibuat di Langkah 5):
+     Kontrak dengan endpoint (app/main.py):
      - GET  /data-operasional?kredit_page=N&klaim_page=M -> render halaman ini (tiap tabel dipaginasi terpisah)
      - POST /data-operasional/pengajuan-kredit   -> simpan form pengajuan kredit
      - POST /data-operasional/klaim-asuransi     -> simpan form klaim asuransi
@@ -8,7 +8,9 @@
      - pengajuan_kredit : list baris tabel pengajuan_kredit (dict/objek, akses row.<kolom>)
      - klaim_asuransi   : list baris tabel klaim_asuransi
      - kredit_pagination / klaim_pagination : info paginasi (lihat build_pagination() di main.py)
-     - message (opsional): pesan sukses; error (opsional): pesan gagal -->
+     - message (opsional): pesan sukses; error (opsional): pesan gagal
+     - user : user yang sedang login (untuk banner); halaman ini wajib login dan POST-nya dibatasi
+              rate limit bucket "data-operasional" (10 request/menit per IP) -->
 <!DOCTYPE html>
 <html lang="id">
 <head>
