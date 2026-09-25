@@ -1,0 +1,65 @@
+<!-- app/templates/login.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <!-- Lebar tampilan mengikuti layar perangkat agar layout responsif di ponsel -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NALA — Login</title>
+    <!-- Favicon dan stylesheet yang sama dengan halaman lain -->
+    <link rel="icon" href="/static/NALA_Logov2.jpg" type="image/jpeg">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Top bar: brand saja (navigasi baru tersedia setelah login) -->
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-logo" aria-hidden="true"></span>
+                <div class="brand-text">
+                    <h1>NALA</h1>
+                    <p class="tagline">Not Another Lowkey Assistant</p>
+                </div>
+            </div>
+        </header>
+
+        <main class="upload-page">
+            <!-- Kartu 1: form login -->
+            <section class="upload-card">
+                <h2>Login</h2>
+                <p class="hint">Masuk untuk memakai NALA. Hak akses mengikuti role akun Anda.</p>
+
+                <!-- Pesan error dari POST /login bila username/password salah -->
+                {% if error %}
+                <p class="error">{{ error }}</p>
+                {% endif %}
+
+                <form method="post" action="/login" class="data-form">
+                    <label>
+                        Username
+                        <input type="text" name="username" autocomplete="username" required autofocus>
+                    </label>
+                    <label>
+                        Password
+                        <input type="password" name="password" autocomplete="current-password" required>
+                    </label>
+                    <button type="submit">Login</button>
+                </form>
+            </section>
+
+            <!-- Kartu 2: akun demo (khusus development) -->
+            <section class="upload-card">
+                <h2>Akun Demo</h2>
+                <p class="hint">Semua akun memakai password <code>nala123</code>.</p>
+                <ul class="doc-list">
+                    <li><code>budi.umum</code> — Staff Umum</li>
+                    <li><code>sari.finance</code> — Staff Finance</li>
+                    <li><code>andi.super</code> — Supervisor</li>
+                    <li><code>thoriq.netsec</code> — Staff NetSec</li>
+                    <li><code>zein.netsec</code> — Supervisor NetSec</li>
+                </ul>
+            </section>
+        </main>
+    </div>
+</body>
+</html>

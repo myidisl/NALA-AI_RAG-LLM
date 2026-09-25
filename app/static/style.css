@@ -1,0 +1,1505 @@
+/* app/static/style.css
+   Tampilan bergaya aplikasi chat Gen-AI: layout satu layar penuh, pesan NALA
+   tanpa bubble (avatar + teks), pesan user berupa bubble di kanan, dan composer
+   melayang di bawah. Semua animasi murni CSS; tidak ada logic JS yang bergantung
+   pada file ini selain id elemen di chat.html. */
+
+/* Palet warna NALA (skema yang sudah dipakai sebelumnya) */
+:root {
+    --peach: #e0b1a8;        /* aksen lembut */
+    --coral: #dd6a56;        /* warna identitas NALA */
+    --coral-dark: #c4533f;   /* coral lebih gelap untuk hover/teks tebal */
+    --gray: #585454;         /* warna teks utama */
+    --border: #ddd;
+    --bg: #fbf5f3;           /* latar halaman: peach sangat pucat */
+    --surface: #ffffff;
+    --tint: #fcebe7;         /* latar lembut bernuansa coral */
+    --line: #f1e3df;         /* garis pemisah halus */
+    --plum: #2b2233;         /* latar gelap logo NALA */
+    /* Logo NALA: versi penuh (simbol + tulisan) dan versi simbol saja (di-crop
+       dari file yang sama lewat background-size/position) untuk ikon kecil. */
+    --logo-full: url("/static/NALA_Logov2.jpg") center / cover no-repeat;
+    --logo-mark: url("/static/NALA_Logov2.jpg") 52% 14% / 190% no-repeat;
+    /* Token semantik (Module 29): nilai terang = warna yang sebelumnya di-hardcode, jadi tampilan
+       default tidak berubah; tema gelap di bawah cukup menimpa token-token ini. */
+    --text: var(--gray);
+    --text-muted: #8a7f7d;
+    --text-subtle: #7a6f6d;
+    --surface-user: var(--tint);
+    --surface-soft: #fdf9f8;
+    --accent: var(--coral);
+    --on-accent: #fff;
+    --topbar-bg: rgba(251, 245, 243, 0.85);
+    --bg-transparent: rgba(251, 245, 243, 0);
+    --danger: #c0392b;
+    --danger-bg: #fdecea;
+    --success: #2e7a4a;
+    --success-bg: #eaf6ee;
+    --success-border: #3c9a5f;
+    --warning: #9a6a00;
+    --warning-bg: #fff4dc;
+    --typing-dot: #1e3a5f;
+    --badge-rag: #1f6b3a;
+    --badge-rag-bg: #e8f5ec;
+    --badge-rag-border: #b7dfc3;
+    --badge-sql: #1e4f8f;
+    --badge-sql-bg: #e8f0fb;
+    --badge-sql-border: #b9cff0;
+    --badge-cache: #8a5a00;
+    --badge-cache-bg: #fdf3e1;
+    --badge-cache-border: #f0d59a;
+    --column: 760px;         /* lebar kolom percakapan */
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Ukuran elemen sudah termasuk padding & border agar perhitungan layout lebih mudah */
+* {
+    box-sizing: border-box;
+}
+
+/* Atribut hidden harus tetap menyembunyikan elemen walau diberi display lain */
+[hidden] {
+    display: none !important;
+}
+
+/* Teks hanya untuk screen reader (mis. label tombol ikon) */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+/* Tinggi penuh agar layout .app bisa mengisi seluruh layar */
+html,
+body {
+    height: 100%;
+}
+
+/* Tipografi dasar dan warna latar seluruh halaman */
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--gray);
+    background: var(--bg);
+}
+
+/* Kerangka satu layar: top bar, area percakapan (scroll), composer */
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;   /* fallback untuk browser lama */
+    height: 100dvh;  /* tinggi layar dinamis (memperhitungkan address bar di ponsel) */
+}
+
+/* ---------- Top bar ---------- */
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 20px;
+    background: var(--topbar-bg);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    z-index: 1;
+}
+
+/* Logo + nama aplikasi di kiri top bar */
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* Ikon logo di top bar: simbol "N" dari logo NALA */
+.brand-logo {
+    display: block;
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    background: var(--plum);
+    background: var(--logo-mark), var(--plum);
+    box-shadow: 0 4px 12px rgba(43, 34, 51, 0.25);
+}
+
+/* Nama aplikasi "NALA" di top bar */
+h1 {
+    margin: 0;
+    font-size: 1.05em;
+    line-height: 1.2;
+    color: var(--coral);
+    letter-spacing: 0.03em;
+}
+
+/* Kepanjangan nama di bawah judul */
+.tagline {
+    margin: 0;
+    font-size: 0.75em;
+    line-height: 1.2;
+    color: var(--peach);
+}
+
+/* Warna pemisah "|" antar link navigasi */
+nav {
+    color: var(--peach);
+    white-space: nowrap;
+}
+
+/* Link navigasi berbentuk pil */
+nav a {
+    padding: 5px 12px;
+    border-radius: 999px;
+    color: var(--coral);
+    font-size: 0.875em;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.2s;
+}
+
+/* Sorot link halaman aktif dan saat di-hover */
+nav a.active,
+nav a:hover {
+    background: var(--tint);
+}
+
+/* Banner user yang sedang login + tautan logout di top bar */
+.user-banner {
+    color: var(--coral);
+    font-size: 0.8em;
+    white-space: nowrap;
+}
+
+.user-banner a {
+    color: var(--coral);
+    font-weight: 600;
+}
+
+/* Jumlah pesan + tombol reset di pojok kanan top bar */
+.chat-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 0.8em;
+}
+
+/* Badge jumlah pesan */
+#message-count {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--tint);
+    color: var(--coral);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Tombol reset percakapan */
+#reset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--gray);
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+#reset-btn:hover {
+    border-color: var(--peach);
+    color: var(--coral);
+}
+
+/* Ikon reset berputar saat di-hover */
+#reset-btn:hover svg {
+    transform: rotate(-120deg);
+}
+
+#reset-btn svg {
+    transition: transform 0.4s var(--ease);
+}
+
+/* ---------- Area percakapan ---------- */
+#history {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px; /* + margin-bottom 14px .msg-row = jarak 22px antarpesan seperti sebelumnya */
+    overflow-y: auto;
+    /* Kolom percakapan terpusat dengan lebar maksimal --column */
+    padding: 28px max(16px, calc((100% - var(--column)) / 2)) 24px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--peach) transparent;
+}
+
+/* Layar sambutan saat belum ada percakapan (juga setelah Reset) */
+#history:empty {
+    gap: 22px;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+}
+
+/* Logo NALA versi penuh di layar sambutan */
+#history:empty::before {
+    content: "";
+    width: 136px;
+    height: 136px;
+    margin-bottom: 12px;
+    border-radius: 32px;
+    background: var(--plum);
+    background: var(--logo-full), var(--plum);
+    box-shadow: 0 16px 40px rgba(43, 34, 51, 0.28), 0 0 0 6px color-mix(in srgb, var(--accent) 8%, transparent);
+    animation: fade-up 0.6s var(--ease) both, float 4s ease-in-out 0.6s infinite;
+}
+
+/* Teks sapaan di layar sambutan (\A = baris baru) */
+#history:empty::after {
+    content: "Halo! Ada yang bisa NALA bantu hari ini?\A Tanyakan seputar teknologi atau SOP internal bank.";
+    white-space: pre-line;
+    color: var(--gray);
+    font-size: 1.25em;
+    font-weight: 600;
+    line-height: 1.8;
+    animation: fade-up 0.6s var(--ease) 0.1s both;
+}
+
+/* ---------- Baris pesan berbentuk bubble (Module 29) ----------
+   Tiap pesan = <div class="msg-row user|nala"> berisi satu <div class="bubble"> (dibuat addRow()
+   di chat.html). Jarak antarbaris = gap #history + margin-bottom .msg-row. */
+.msg-row {
+    display: flex;
+    margin-bottom: 14px;
+}
+
+.msg-row.user {
+    justify-content: flex-end;
+}
+
+.msg-row.nala {
+    justify-content: flex-start;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+/* Animasi masuk hanya untuk 2 pesan terbaru (pesan user + balasan NALA) */
+#history > .msg-row:nth-last-child(-n + 2) {
+    animation: message-in 0.4s var(--ease) both;
+}
+
+.bubble {
+    max-width: 78%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text);
+}
+
+/* Bubble user di kanan; sudut kanan bawah lebih lancip sebagai "ekor" */
+.msg-row.user .bubble {
+    background: var(--surface-user);
+    border-bottom-right-radius: 6px;
+}
+
+/* Bubble NALA di kiri. Isinya HTML hasil Markdown (marked + DOMPurify) yang mengandung baris baru
+   di antara tag, jadi white-space dikembalikan ke normal agar tidak muncul baris kosong ekstra. */
+.msg-row.nala .bubble {
+    min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-bottom-left-radius: 6px;
+    white-space: normal;
+}
+
+/* Avatar NALA di kiri bubble */
+.msg-row.nala::before {
+    content: "";
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: var(--plum);
+    background: var(--logo-mark), var(--plum);
+    box-shadow: 0 3px 8px rgba(43, 34, 51, 0.2);
+}
+
+/* Avatar berdenyut selama NALA masih "mengetik" */
+.msg-row.nala:has(.typing)::before {
+    animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* Teks tebal (**bold**) di balasan NALA */
+.nala strong {
+    color: var(--coral-dark);
+}
+
+/* Kursor berkedip di akhir teks selama balasan masih di-stream
+   (tombol kirim dinonaktifkan oleh JS selama menunggu balasan). Bila blok terakhir berupa
+   paragraf/heading/item list, kursor ditempel di dalamnya agar sebaris dengan teks terakhir;
+   selain itu (tabel, blok kode) kursor muncul di bawah blok tersebut. */
+.app:has(#chat-form button:disabled) .msg-row.nala:last-child:not(:has(.typing, .error)) .bubble > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+.app:has(#chat-form button:disabled) .msg-row.nala:last-child:not(:has(.typing, .error)) .bubble > :is(ul, ol):last-child > li:last-child::after,
+.app:has(#chat-form button:disabled) .msg-row.nala:last-child:not(:has(.typing, .error)) .bubble:not(:has(> :is(p, h1, h2, h3, h4, h5, h6, ul, ol):last-child))::after {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 1.1em;
+    margin-left: 3px;
+    border-radius: 2px;
+    background: var(--coral);
+    vertical-align: text-bottom;
+    animation: caret 1s steps(1) infinite;
+}
+
+/* ---------- Markdown di balasan NALA ---------- */
+/* Jarak antar-blok; blok pertama menempel ke nama "NALA", blok terakhir tanpa margin bawah */
+.nala :is(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4, h5, h6, hr) {
+    margin: 0 0 12px;
+}
+
+.nala .bubble > :last-child {
+    margin-bottom: 0;
+}
+
+.nala :is(h1, h2, h3, h4, h5, h6) {
+    margin-top: 16px;
+    line-height: 1.35;
+    color: var(--coral-dark);
+}
+
+.nala .bubble > :is(h1, h2, h3, h4, h5, h6):first-child {
+    margin-top: 0;
+}
+
+.nala h1 { font-size: 1.25em; }
+.nala h2 { font-size: 1.15em; }
+.nala h3 { font-size: 1.05em; }
+.nala :is(h4, h5, h6) { font-size: 1em; }
+
+.nala :is(ul, ol) {
+    padding-left: 1.4em;
+}
+
+.nala li + li {
+    margin-top: 4px;
+}
+
+.nala li > :is(ul, ol) {
+    margin: 4px 0 0;
+}
+
+.nala li::marker {
+    color: var(--coral);
+}
+
+/* Tabel: display block + overflow agar tabel lebar bisa di-scroll horizontal
+   tanpa melebarkan kolom percakapan (terutama di layar sempit) */
+.nala table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 0.925em;
+    overflow-wrap: normal;
+}
+
+.nala :is(th, td) {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+}
+
+/* Perataan kolom dari sintaks Markdown (|:---:| dan |---:|), dikirim marked sebagai atribut align */
+.nala :is(th, td)[align="center"] {
+    text-align: center;
+}
+
+.nala :is(th, td)[align="right"] {
+    text-align: right;
+}
+
+.nala :is(th, td) + :is(th, td) {
+    border-left: 1px solid var(--line);
+}
+
+.nala th {
+    background: var(--tint);
+    color: var(--coral-dark);
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.nala tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.nala tbody tr:nth-child(even) td {
+    background: var(--surface-soft);
+}
+
+/* Kode: inline dan blok */
+.nala code {
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: var(--tint);
+    color: var(--coral-dark);
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.875em;
+}
+
+.nala pre {
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-soft);
+    overflow-wrap: normal;
+}
+
+.nala pre code {
+    padding: 0;
+    background: none;
+    color: var(--gray);
+    font-size: 0.85em;
+}
+
+.nala blockquote {
+    padding: 4px 0 4px 14px;
+    border-left: 3px solid var(--peach);
+    color: var(--text-subtle);
+}
+
+.nala hr {
+    height: 1px;
+    border: none;
+    background: var(--line);
+}
+
+.nala a {
+    color: var(--coral-dark);
+    text-underline-offset: 2px;
+}
+
+/* ---------- Composer ---------- */
+.composer {
+    padding: 8px max(16px, calc((100% - var(--column)) / 2)) 14px;
+    background: linear-gradient(to bottom, var(--bg-transparent), var(--bg) 24px);
+}
+
+/* Catatan windowing tampil sebagai chip kecil di atas kotak input */
+#windowing-note {
+    display: table;
+    margin: 0 auto 8px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: var(--tint);
+    color: var(--coral-dark);
+    font-size: 0.75em;
+    animation: fade-up 0.4s var(--ease) both;
+}
+
+/* Kotak input besar: teks di atas, switch RAG & tombol kirim di bawah */
+#chat-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 12px 10px 18px;
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    background: var(--surface);
+    box-shadow: 0 6px 24px rgba(88, 84, 84, 0.08);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* Efek fokus pada kotak input saat sedang mengetik */
+#chat-form:focus-within {
+    border-color: var(--peach);
+    box-shadow: 0 6px 24px rgba(88, 84, 84, 0.08), 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Input teks tanpa border sendiri; bingkai berasal dari #chat-form */
+#message {
+    width: 100%;
+    padding: 6px 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--gray);
+    font: inherit;
+}
+
+#message::placeholder {
+    color: var(--peach);
+}
+
+/* Baris bawah composer: switch RAG di kiri, tombol kirim di kanan */
+.composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+/* Switch RAG bergaya toggle */
+.rag-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px 4px 4px;
+    border-radius: 999px;
+    color: var(--gray);
+    font-size: 0.8em;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s, color 0.2s;
+}
+
+.rag-toggle:hover {
+    background: var(--tint);
+}
+
+/* Warna label saat RAG aktif */
+.rag-toggle:has(input:checked) {
+    color: var(--coral-dark);
+}
+
+/* Checkbox asli disembunyikan tampilannya dan diganti jalur switch */
+.rag-toggle input {
+    appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 34px;
+    height: 20px;
+    margin: 0;
+    border-radius: 999px;
+    background: var(--border);
+    cursor: pointer;
+    transition: background 0.25s;
+}
+
+/* Kenop bulat switch */
+.rag-toggle input::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--on-accent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    transition: transform 0.25s var(--ease);
+}
+
+/* Posisi "on": jalur berwarna coral dan kenop bergeser ke kanan */
+.rag-toggle input:checked {
+    background: var(--coral);
+}
+
+.rag-toggle input:checked::before {
+    transform: translateX(14px);
+}
+
+/* Outline fokus untuk navigasi keyboard */
+.rag-toggle input:focus-visible {
+    outline: 2px solid var(--peach);
+    outline-offset: 2px;
+}
+
+/* Tombol kirim bulat dengan ikon panah */
+#chat-form button[type="submit"] {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border: none;
+    border-radius: 50%;
+    background: var(--coral);
+    color: var(--on-accent);
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s var(--ease), box-shadow 0.2s;
+}
+
+/* Efek hover & klik tombol kirim (hanya saat aktif) */
+#chat-form button[type="submit"]:hover:not(:disabled) {
+    background: var(--coral-dark);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+#chat-form button[type="submit"]:active:not(:disabled) {
+    transform: scale(0.92);
+}
+
+/* Saat menunggu balasan: ikon panah diganti spinner */
+#chat-form button[type="submit"]:disabled {
+    background: var(--peach);
+    opacity: 1;
+}
+
+#chat-form button[type="submit"]:disabled svg {
+    display: none;
+}
+
+#chat-form button[type="submit"]:disabled::after {
+    content: "";
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.45);
+    border-top-color: var(--on-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Catatan kecil di bawah composer */
+.disclaimer {
+    margin: 8px 0 0;
+    text-align: center;
+    font-size: 0.72em;
+    color: var(--peach);
+}
+
+/* ---------- Indikator "sedang mengetik" ---------- */
+/* Teks berkilau (shimmer) seperti indikator "thinking" pada aplikasi AI */
+.typing {
+    display: inline-flex;
+    align-items: center;
+    background: linear-gradient(90deg, var(--peach) 0%, var(--coral) 40%, var(--peach) 80%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-style: italic;
+    animation: shimmer 1.8s linear infinite;
+}
+
+/* Tiga titik yang memantul bergantian */
+.typing i {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: var(--coral);
+    animation: bounce 1.2s infinite ease-in-out both;
+}
+
+/* Jeda animasi berbeda per titik agar memantul berurutan */
+.typing i:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.typing i:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+/* Tombol/input yang dinonaktifkan (mis. saat menunggu balasan) */
+button:disabled,
+input:disabled {
+    cursor: not-allowed;
+}
+
+#message:disabled {
+    opacity: 0.6;
+}
+
+/* Pesan error di balasan saat request /chat/stream gagal */
+.error {
+    display: inline-block;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-size: 0.925em;
+}
+
+/* ---------- Keyframes ---------- */
+/* Pesan baru muncul dari bawah */
+@keyframes message-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Muncul perlahan sambil naik (layar sambutan, kartu, chip) */
+@keyframes fade-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Logo sambutan melayang naik-turun */
+@keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+}
+
+/* Cincin berdenyut di sekitar avatar */
+@keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+    50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+/* Kursor berkedip (on/off tanpa transisi) */
+@keyframes caret {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+}
+
+/* Gradien bergerak untuk efek teks berkilau */
+@keyframes shimmer {
+    from { background-position: 100% 0; }
+    to { background-position: -100% 0; }
+}
+
+/* Titik-titik indikator mengetik memantul */
+@keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+    40% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* Putaran spinner tombol kirim */
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ---------- Layar sempit ---------- */
+@media (max-width: 600px) {
+    .topbar {
+        padding: 8px 12px;
+        gap: 10px;
+    }
+
+    /* Nav tetap tampil (link ke Knowledge Base); nama di samping logo disembunyikan agar muat */
+    .brand-text,
+    #reset-btn span {
+        display: none;
+    }
+
+    nav a {
+        padding: 5px 8px;
+    }
+
+    /* Jarak antarpesan dan padding atas lebih rapat */
+    #history {
+        gap: 4px; /* + margin-bottom 14px .msg-row = 18px */
+        padding-top: 20px;
+    }
+
+    .bubble {
+        max-width: 88%;
+    }
+
+    /* Avatar lebih kecil agar bubble NALA mendapat ruang lebih lebar */
+    .msg-row.nala {
+        gap: 8px;
+    }
+
+    .msg-row.nala::before {
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+    }
+
+    #history:empty::after {
+        font-size: 1.05em;
+    }
+}
+
+/* Hormati preferensi pengguna yang ingin animasi minimal */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ---------- Halaman upload dokumen (Knowledge Base) ---------- */
+/* Area konten halaman upload: kolom terpusat yang bisa di-scroll */
+.upload-page {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px max(16px, calc((100% - 640px) / 2));
+}
+
+/* Kartu putih pembungkus tiap section di halaman upload */
+.upload-card {
+    margin-bottom: 20px;
+    padding: 22px 24px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--surface);
+    box-shadow: 0 6px 24px rgba(88, 84, 84, 0.06);
+    animation: fade-up 0.5s var(--ease) both;
+}
+
+/* Kartu kedua beranimasi sedikit lebih lambat (efek berurutan) */
+.upload-card + .upload-card {
+    animation-delay: 0.08s;
+}
+
+.upload-card h2 {
+    margin: 0 0 4px;
+    font-size: 1.1em;
+    color: var(--coral);
+}
+
+/* Baris form: input file dan tombol upload */
+.upload-form {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+/* Input file bergaya area drop dengan garis putus-putus */
+.upload-form input[type="file"] {
+    flex: 1;
+    min-width: 0;
+    padding: 10px;
+    border: 1.5px dashed var(--peach);
+    border-radius: 14px;
+    background: var(--bg);
+    color: var(--gray);
+    font: inherit;
+    font-size: 0.875em;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.upload-form input[type="file"]:hover {
+    border-color: var(--coral);
+    background: var(--tint);
+}
+
+/* Tombol "Choose file" bawaan browser */
+.upload-form input[type="file"]::file-selector-button {
+    margin-right: 12px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 999px;
+    background: var(--tint);
+    color: var(--coral-dark);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* Tombol Upload */
+.upload-form button[type="submit"] {
+    padding: 10px 22px;
+    border: none;
+    border-radius: 999px;
+    background: var(--coral);
+    color: var(--on-accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s var(--ease);
+}
+
+.upload-form button[type="submit"]:hover {
+    background: var(--coral-dark);
+    transform: translateY(-1px);
+}
+
+/* Pesan konfirmasi setelah upload berhasil */
+.success {
+    margin: 14px 0 0;
+    padding: 10px 14px;
+    border-left: 3px solid var(--success-border);
+    border-radius: 10px;
+    background: var(--success-bg);
+    color: var(--success);
+    font-size: 0.925em;
+    animation: fade-up 0.4s var(--ease) both;
+}
+
+/* Teks keterangan/penjelasan kecil */
+.hint {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.875em;
+}
+
+/* Daftar dokumen di knowledge base */
+.doc-list {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* Satu baris nama dokumen dengan garis pemisah */
+.doc-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.925em;
+    overflow-wrap: anywhere;
+}
+
+.doc-list li:last-child {
+    border-bottom: none;
+}
+
+/* Ikon dokumen kecil di depan nama file */
+.doc-list li::before {
+    content: "";
+    flex-shrink: 0;
+    width: 14px;
+    height: 17px;
+    border-radius: 3px;
+    background: linear-gradient(135deg, var(--peach), var(--coral));
+}
+
+/* Di layar sempit navigasi tetap tampil di halaman upload (satu-satunya jalan kembali ke Chat) */
+@media (max-width: 600px) {
+    .app:has(.upload-page) nav {
+        display: block;
+    }
+
+    .upload-card {
+        padding: 18px 16px;
+    }
+}
+
+/* ---------- Halaman Data Operasional ---------- */
+/* Kolom konten lebih lebar dari halaman upload agar tabel data muat */
+.data-page {
+    padding-left: max(16px, calc((100% - 960px) / 2));
+    padding-right: max(16px, calc((100% - 960px) / 2));
+}
+
+/* Tanpa animasi masuk: setiap klik paginasi memuat ulang halaman, animasi kartu akan
+   terasa seperti kedipan di setiap perpindahan halaman */
+.data-page .upload-card {
+    animation: none;
+}
+
+/* Pesan sukses/gagal di atas kartu */
+.data-page > :is(.success, .form-error) {
+    margin: 0 0 16px;
+}
+
+/* Pesan gagal simpan (mis. validasi atau database tidak terjangkau) */
+.form-error {
+    padding: 10px 14px;
+    border-left: 3px solid var(--danger);
+    border-radius: 10px;
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-size: 0.925em;
+    animation: fade-up 0.4s var(--ease) both;
+}
+
+/* Form: grid 2 kolom (1 kolom di layar sempit), label di atas input */
+.data-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin-top: 16px;
+}
+
+.data-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--gray);
+    font-size: 0.8125em;
+    font-weight: 600;
+}
+
+/* Field yang memakan satu baris penuh (mis. textarea alasan penolakan) */
+.data-form .data-form-wide {
+    grid-column: 1 / -1;
+}
+
+.data-form .optional {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.data-form :is(input, select, textarea) {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--gray);
+    font: inherit;
+    font-size: 0.9375rem;
+    font-weight: 400;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.data-form textarea {
+    resize: vertical;
+}
+
+.data-form :is(input, select, textarea):focus {
+    outline: none;
+    border-color: var(--peach);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Tombol simpan: gaya sama dengan tombol Upload, rata kanan di baris sendiri */
+.data-form button[type="submit"] {
+    grid-column: 1 / -1;
+    justify-self: end;
+    padding: 10px 22px;
+    border: none;
+    border-radius: 999px;
+    background: var(--coral);
+    color: var(--on-accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s var(--ease);
+}
+
+.data-form button[type="submit"]:hover {
+    background: var(--coral-dark);
+    transform: translateY(-1px);
+}
+
+/* Judul daftar data di bawah form */
+.data-list-title {
+    margin: 24px 0 10px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--coral-dark);
+    font-size: 0.95em;
+}
+
+/* Pembungkus tabel: scroll horizontal bila kolom tidak muat (layar sempit) */
+.data-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875em;
+}
+
+.data-table :is(th, td) {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+}
+
+.data-table th {
+    background: var(--tint);
+    color: var(--coral-dark);
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table tbody tr:nth-child(even) td {
+    background: var(--surface-soft);
+}
+
+/* Kolom pendek (ID nasabah, tanggal) tidak dipotong ke baris baru */
+.data-table .nowrap {
+    white-space: nowrap;
+}
+
+/* Kolom angka (jumlah rupiah) rata kanan dan tidak terpotong baris */
+.data-table .num {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Paginasi di bawah tabel: info jumlah data di kiri, tautan halaman di kanan */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.pagination-info {
+    color: var(--text-muted);
+    font-size: 0.8125em;
+}
+
+.pagination-links {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.pagination-links :is(a, span) {
+    display: inline-grid;
+    place-items: center;
+    min-width: 32px;
+    height: 32px;
+    padding: 0 8px;
+    border-radius: 10px;
+    font-size: 0.875em;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.pagination-links a {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--coral-dark);
+    text-decoration: none;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.pagination-links a:hover {
+    border-color: var(--peach);
+    background: var(--tint);
+}
+
+/* Halaman aktif */
+.pagination-links .current {
+    background: var(--coral);
+    color: var(--on-accent);
+}
+
+/* Tombol ‹ › di halaman pertama/terakhir, dan penanda celah "…" */
+.pagination-links :is(.disabled, .ellipsis) {
+    color: var(--border);
+    min-width: 20px;
+    padding: 0 2px;
+}
+
+/* Target anchor paginasi tidak menempel di tepi atas area scroll */
+.data-list-title {
+    scroll-margin-top: 16px;
+}
+
+/* Label status berwarna sesuai tahap proses */
+.status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--line);
+    color: var(--gray);
+    font-size: 0.8125em;
+    font-weight: 600;
+    white-space: nowrap;
+    text-transform: capitalize;
+}
+
+.status-pending,
+.status-diproses {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+
+.status-disetujui,
+.status-pencairan {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.status-ditolak {
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+
+@media (max-width: 600px) {
+    /* Topbar halaman chat (logo + 3 link nav + jumlah pesan + Reset) tidak muat satu baris:
+       nav dipindah ke baris kedua selebar penuh. Halaman lain tanpa .chat-meta tetap satu baris. */
+    .topbar:has(.chat-meta) {
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+
+    .topbar:has(.chat-meta) nav {
+        order: 3;
+        flex-basis: 100%;
+    }
+
+    .data-form {
+        grid-template-columns: 1fr;
+    }
+
+    .data-form button[type="submit"] {
+        justify-self: stretch;
+    }
+}
+
+/* ---------- Module 29: typing indicator (titik) sebelum token pertama ---------- */
+/* Dipasang bersama class .typing di chat.html (<span class="typing typing-indicator">),
+   sehingga efek lama yang bergantung pada .typing (avatar berdenyut, kursor disembunyikan) tetap jalan. */
+.typing-indicator {
+    display: inline-flex;
+    gap: 4px;
+    vertical-align: middle;
+}
+
+.typing-indicator span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--typing-dot);
+    opacity: 0.4;
+    animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+    0%, 60%, 100% { opacity: 0.4; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* ---------- Module 29: badge tool yang dipakai agent (mode Agent, /chat) ---------- */
+/* Latar pucat + teks gelap agar terbaca di tema terang NALA (tema ini tidak punya mode gelap). */
+.tool-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.tool-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border: 1px solid;
+    border-radius: 999px;
+    font-size: 0.75em;
+    font-weight: 600;
+    line-height: 1.6;
+}
+
+.tool-rag {
+    background: var(--badge-rag-bg);
+    border-color: var(--badge-rag-border);
+    color: var(--badge-rag);
+}
+
+.tool-sql {
+    background: var(--badge-sql-bg);
+    border-color: var(--badge-sql-border);
+    color: var(--badge-sql);
+}
+
+.tool-cache {
+    background: var(--badge-cache-bg);
+    border-color: var(--badge-cache-border);
+    color: var(--badge-cache);
+}
+
+/* ---------- Module 29: tema gelap ---------- */
+/* Palet terang di :root tetap default. Tema gelap aktif otomatis bila OS/browser memakai mode gelap
+   (prefers-color-scheme), atau bila <html data-theme="dark"> dipasang (untuk tombol tema nanti).
+   Hanya token warna yang ditimpa; seluruh aturan lain sudah memakai var(--...). */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg: #212121;
+        --surface: #2f2f2f;
+        --surface-user: #3a3a3a;
+        --text: #ececec;
+        --text-muted: #9b9b9b;
+        --border: #4d4d4d;
+        --accent: #10a37f;
+        /* Token lama dipetakan ke palet gelap agar aturan lama ikut berubah */
+        --gray: var(--text);
+        --coral: var(--accent);
+        --coral-dark: #0d8a6b;
+        --peach: var(--text-muted);
+        --tint: var(--surface-user);
+        --line: var(--border);
+        --text-subtle: #b4b4b4;
+        --surface-soft: #292929;
+        --topbar-bg: rgba(33, 33, 33, 0.85);
+        --bg-transparent: rgba(33, 33, 33, 0);
+        --danger: #ff8a80;
+        --danger-bg: #3b1f1f;
+        --success: #7dd3a0;
+        --success-bg: #1d3326;
+        --success-border: #3c9a5f;
+        --warning: #f0c060;
+        --warning-bg: #3a2f14;
+        --typing-dot: var(--text-muted);
+        --badge-rag: #7dd3a0;
+        --badge-rag-bg: #1d3326;
+        --badge-rag-border: #2f5a40;
+        --badge-sql: #8ab4f8;
+        --badge-sql-bg: #1c2a3d;
+        --badge-sql-border: #2f4a6d;
+        --badge-cache: #f0c060;
+        --badge-cache-bg: #3a2f14;
+        --badge-cache-border: #6b5520;
+        color-scheme: dark; /* scrollbar, date picker, dan kontrol bawaan browser ikut gelap */
+    }
+}
+
+:root[data-theme="dark"] {
+    --bg: #212121;
+    --surface: #2f2f2f;
+    --surface-user: #3a3a3a;
+    --text: #ececec;
+    --text-muted: #9b9b9b;
+    --border: #4d4d4d;
+    --accent: #10a37f;
+    --gray: var(--text);
+    --coral: var(--accent);
+    --coral-dark: #0d8a6b;
+    --peach: var(--text-muted);
+    --tint: var(--surface-user);
+    --line: var(--border);
+    --text-subtle: #b4b4b4;
+    --surface-soft: #292929;
+    --topbar-bg: rgba(33, 33, 33, 0.85);
+    --bg-transparent: rgba(33, 33, 33, 0);
+    --danger: #ff8a80;
+    --danger-bg: #3b1f1f;
+    --success: #7dd3a0;
+    --success-bg: #1d3326;
+    --success-border: #3c9a5f;
+    --warning: #f0c060;
+    --warning-bg: #3a2f14;
+    --typing-dot: var(--text-muted);
+    --badge-rag: #7dd3a0;
+    --badge-rag-bg: #1d3326;
+    --badge-rag-border: #2f5a40;
+    --badge-sql: #8ab4f8;
+    --badge-sql-bg: #1c2a3d;
+    --badge-sql-border: #2f4a6d;
+    --badge-cache: #f0c060;
+    --badge-cache-bg: #3a2f14;
+    --badge-cache-border: #6b5520;
+    color-scheme: dark;
+}
+
+/* Legend metode pencarian di chat.html punya warna inline (#8a7f7d) di blok <style> halaman;
+   selector lebih spesifik ini menimpanya dengan token agar ikut tema (tanpa menyentuh chat.html). */
+.composer .search-method-select legend {
+    color: var(--text-muted);
+}
+
+/* ---------- Module 29: lampiran dokumen sumber (mode Agent) ---------- */
+.sources {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.sources-title {
+    margin-bottom: 2px;
+    font-weight: 600;
+}
+
+/* Selector .nala .sources ul agar mengalahkan gaya list Markdown (.nala ul) */
+.sources ul,
+.nala .sources ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.nala .sources li + li {
+    margin-top: 0;
+}
+
+.nala .sources li::marker {
+    color: var(--text-muted);
+}
+
+/* ---------- Module 29: layar sempit (≤ 480px) ----------
+   Hanya berlaku di bawah 480px; tampilan default tidak berubah. Layout NALA memakai .app satu layar
+   penuh (body tanpa margin), jadi "margin/padding body" di sini = padding top bar, #history, dan composer. */
+@media (max-width: 480px) {
+    .topbar {
+        flex-wrap: wrap;
+        padding: 6px 8px;
+        row-gap: 4px;
+    }
+
+    .user-banner {
+        white-space: normal;
+    }
+
+    .chat-meta {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    #history {
+        /* #history mengisi sisa layar (flex: 1), jadi tinggi dijaga lewat min-height: area chat tidak
+           boleh terjepit di bawah 260px oleh composer yang memanjang; bila tidak muat, halaman di-scroll. */
+        min-height: 260px;
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .composer {
+        padding: 6px 8px 10px;
+    }
+
+    #chat-form {
+        flex-direction: column;
+        padding: 10px 10px 8px 12px;
+        border-radius: 18px;
+    }
+
+    /* Deretan kontrol jadi satu kolom; tombol kirim tetap di kanan bawah */
+    .composer-actions {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    #chat-form button[type="submit"] {
+        align-self: flex-end;
+    }
+
+    fieldset.search-method-select {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+
+    /* Toggle jadi baris sendiri-sendiri. display: flex (bukan block) tetap berupa elemen blok,
+       tapi switch dan teks label tetap sejajar tengah secara vertikal. */
+    .rag-toggle,
+    .rerank-toggle,
+    .agent-toggle,
+    fieldset.search-method-select label {
+        display: flex;
+        max-width: 100%;
+        white-space: normal;
+    }
+}

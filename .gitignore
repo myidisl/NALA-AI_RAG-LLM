@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Log & file lokal
+*.log
+log-airflow.txt
+
+# Environment lokal (bila nanti kredensial dipindah ke .env)
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

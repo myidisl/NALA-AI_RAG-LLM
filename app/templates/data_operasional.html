@@ -1,0 +1,241 @@
+<!-- app/templates/data_operasional.html -->
+<!-- Halaman staff untuk menambah dan melihat data operasional (Postgres nala_operasional).
+     Kontrak dengan endpoint (dibuat di Langkah 5):
+     - GET  /data-operasional?kredit_page=N&klaim_page=M -> render halaman ini (tiap tabel dipaginasi terpisah)
+     - POST /data-operasional/pengajuan-kredit   -> simpan form pengajuan kredit
+     - POST /data-operasional/klaim-asuransi     -> simpan form klaim asuransi
+     Variabel context:
+     - pengajuan_kredit : list baris tabel pengajuan_kredit (dict/objek, akses row.<kolom>)
+     - klaim_asuransi   : list baris tabel klaim_asuransi
+     - kredit_pagination / klaim_pagination : info paginasi (lihat build_pagination() di main.py)
+     - message (opsional): pesan sukses; error (opsional): pesan gagal -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <!-- Lebar tampilan mengikuti layar perangkat agar layout responsif di ponsel -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NALA — Data Operasional</title>
+    <!-- Favicon dan stylesheet yang sama dengan halaman lain -->
+    <link rel="icon" href="/static/NALA_Logov2.jpg" type="image/jpeg">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    {#- Komponen paginasi tabel. p = dict dari build_pagination(); param = query string halaman tabel ini;
+        other_param/other_page = halaman tabel lain yang dipertahankan; anchor = id section tujuan scroll. -#}
+    {% macro pager(p, param, other_param, other_page, anchor, label) %}
+    {% if p.total %}
+    <div class="pagination" role="navigation" aria-label="Halaman {{ label }}">
+        <span class="pagination-info">Menampilkan {{ p.start }}–{{ p.end }} dari {{ p.total }} data</span>
+        {% if p.pages > 1 %}
+        {% set base = "?" ~ other_param ~ "=" ~ other_page ~ "&" ~ param ~ "=" %}
+        <div class="pagination-links">
+            {% if p.page > 1 %}
+            <a href="{{ base }}{{ p.page - 1 }}#{{ anchor }}" aria-label="Halaman sebelumnya">&lsaquo;</a>
+            {% else %}
+            <span class="disabled" aria-hidden="true">&lsaquo;</span>
+            {% endif %}
+            {% for n in p.links %}
+                {% if n is none %}
+            <span class="ellipsis">…</span>
+                {% elif n == p.page %}
+            <span class="current" aria-current="page">{{ n }}</span>
+                {% else %}
+            <a href="{{ base }}{{ n }}#{{ anchor }}">{{ n }}</a>
+                {% endif %}
+            {% endfor %}
+            {% if p.page < p.pages %}
+            <a href="{{ base }}{{ p.page + 1 }}#{{ anchor }}" aria-label="Halaman berikutnya">&rsaquo;</a>
+            {% else %}
+            <span class="disabled" aria-hidden="true">&rsaquo;</span>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    <div class="app">
+        <!-- Top bar: brand dan navigasi antar halaman -->
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-logo" aria-hidden="true"></span>
+                <div class="brand-text">
+                    <h1>NALA</h1>
+                    <p class="tagline">Not Another Lowkey Assistant</p>
+                </div>
+            </div>
+            <nav>
+                <a href="/">Chat</a>
+                <a href="/upload">Knowledge Base</a>
+                <a href="/data-operasional" class="active">Data Operasional</a>
+            </nav>
+            <!-- Identitas user yang sedang login (dari sesi) + tautan logout -->
+            {% if user %}<span class="user-banner">Masuk sebagai <b>{{ user.nama }}</b> [{{ user.role_label }}] · <a href="/logout">Logout</a></span>{% endif %}
+        </header>
+
+        <!-- data-page melebarkan kolom konten (upload-page) agar tabel data muat -->
+        <main class="upload-page data-page">
+            <!-- Pesan hasil simpan dari server (sukses atau gagal) -->
+            {% if message %}
+            <p class="success">{{ message }}</p>
+            {% endif %}
+            {% if error %}
+            <p class="form-error">{{ error }}</p>
+            {% endif %}
+
+            <!-- Kartu 1: pengajuan kredit — form tambah data lalu daftar data -->
+            <section class="upload-card" id="pengajuan-kredit">
+                <h2>Pengajuan Kredit</h2>
+                <p class="hint">Tambahkan data pengajuan kredit nasabah. Gunakan data sesuai dokumen resmi.</p>
+
+                <form method="post" action="/data-operasional/pengajuan-kredit" class="data-form">
+                    <label>
+                        ID Nasabah
+                        <input type="text" name="nasabah_id" maxlength="10" placeholder="mis. NSB0003" required>
+                    </label>
+                    <label>
+                        Nama Nasabah
+                        <input type="text" name="nama_nasabah" maxlength="100" required>
+                    </label>
+                    <label>
+                        Jumlah Pengajuan (Rp)
+                        <input type="number" name="jumlah_pengajuan" min="0" step="0.01" required>
+                    </label>
+                    <label>
+                        Status
+                        <!-- Nilai harus sama dengan CHECK constraint tabel pengajuan_kredit -->
+                        <select name="status" required>
+                            <option value="pending">Pending</option>
+                            <option value="disetujui">Disetujui</option>
+                            <option value="ditolak">Ditolak</option>
+                            <option value="pencairan">Pencairan</option>
+                        </select>
+                    </label>
+                    <label>
+                        Tanggal Pengajuan
+                        <input type="date" name="tanggal_pengajuan" required>
+                    </label>
+                    <label class="data-form-wide">
+                        <span>Alasan Penolakan <span class="optional">(isi bila status Ditolak)</span></span>
+                        <textarea name="alasan_penolakan" rows="2"></textarea>
+                    </label>
+                    <button type="submit">Simpan Pengajuan</button>
+                </form>
+
+                <h3 class="data-list-title" id="daftar-pengajuan-kredit">Daftar Pengajuan Kredit</h3>
+                {% if pengajuan_kredit %}
+                <!-- Pembungkus scroll agar tabel lebar tidak melebarkan halaman di layar sempit -->
+                <div class="data-table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>ID Nasabah</th>
+                                <th>Nama Nasabah</th>
+                                <th class="num">Jumlah (Rp)</th>
+                                <th>Status</th>
+                                <th>Tanggal</th>
+                                <th>Alasan Penolakan</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in pengajuan_kredit %}
+                            <tr>
+                                <td>{{ row.id }}</td>
+                                <td class="nowrap">{{ row.nasabah_id }}</td>
+                                <td>{{ row.nama_nasabah }}</td>
+                                <!-- Format ribuan gaya Indonesia (titik), tanpa desimal -->
+                                <td class="num">{{ "{:,.0f}".format(row.jumlah_pengajuan).replace(",", ".") if row.jumlah_pengajuan is not none else "-" }}</td>
+                                <td><span class="status-badge status-{{ row.status }}">{{ row.status }}</span></td>
+                                <td class="nowrap">{{ row.tanggal_pengajuan or "-" }}</td>
+                                <td>{{ row.alasan_penolakan or "-" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {{ pager(kredit_pagination, "kredit_page", "klaim_page", klaim_pagination.page, "daftar-pengajuan-kredit", "pengajuan kredit") }}
+                {% else %}
+                <p class="hint">Belum ada data pengajuan kredit.</p>
+                {% endif %}
+            </section>
+
+            <!-- Kartu 2: klaim asuransi — form tambah data lalu daftar data -->
+            <section class="upload-card" id="klaim-asuransi">
+                <h2>Klaim Asuransi</h2>
+                <p class="hint">Tambahkan data klaim asuransi nasabah.</p>
+
+                <form method="post" action="/data-operasional/klaim-asuransi" class="data-form">
+                    <label>
+                        ID Nasabah
+                        <input type="text" name="nasabah_id" maxlength="10" placeholder="mis. NSB0003" required>
+                    </label>
+                    <label>
+                        Nama Nasabah
+                        <input type="text" name="nama_nasabah" maxlength="100" required>
+                    </label>
+                    <label>
+                        Jenis Klaim
+                        <input type="text" name="jenis_klaim" maxlength="50" placeholder="mis. Kesehatan" required>
+                    </label>
+                    <label>
+                        Jumlah Klaim (Rp)
+                        <input type="number" name="jumlah_klaim" min="0" step="0.01" required>
+                    </label>
+                    <label>
+                        Status
+                        <!-- Nilai harus sama dengan CHECK constraint tabel klaim_asuransi -->
+                        <select name="status" required>
+                            <option value="pending">Pending</option>
+                            <option value="diproses">Diproses</option>
+                            <option value="disetujui">Disetujui</option>
+                            <option value="ditolak">Ditolak</option>
+                        </select>
+                    </label>
+                    <label>
+                        Tanggal Klaim
+                        <input type="date" name="tanggal_klaim" required>
+                    </label>
+                    <button type="submit">Simpan Klaim</button>
+                </form>
+
+                <h3 class="data-list-title" id="daftar-klaim-asuransi">Daftar Klaim Asuransi</h3>
+                {% if klaim_asuransi %}
+                <div class="data-table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>ID Nasabah</th>
+                                <th>Nama Nasabah</th>
+                                <th>Jenis Klaim</th>
+                                <th class="num">Jumlah (Rp)</th>
+                                <th>Status</th>
+                                <th>Tanggal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in klaim_asuransi %}
+                            <tr>
+                                <td>{{ row.id }}</td>
+                                <td class="nowrap">{{ row.nasabah_id }}</td>
+                                <td>{{ row.nama_nasabah }}</td>
+                                <td>{{ row.jenis_klaim }}</td>
+                                <td class="num">{{ "{:,.0f}".format(row.jumlah_klaim).replace(",", ".") if row.jumlah_klaim is not none else "-" }}</td>
+                                <td><span class="status-badge status-{{ row.status }}">{{ row.status }}</span></td>
+                                <td class="nowrap">{{ row.tanggal_klaim or "-" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {{ pager(klaim_pagination, "klaim_page", "kredit_page", kredit_pagination.page, "daftar-klaim-asuransi", "klaim asuransi") }}
+                {% else %}
+                <p class="hint">Belum ada data klaim asuransi.</p>
+                {% endif %}
+            </section>
+        </main>
+    </div>
+</body>
+</html>

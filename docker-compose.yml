@@ -1,0 +1,267 @@
+services:
+  # Server Ollama yang menyediakan model LLM lokal via HTTP di port 11434.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"  # API Ollama (host:container)
+    volumes:
+      - ollama_data:/root/.ollama  # persist model yang sudah di-pull antar restart
+
+  # OpenSearch sebagai penyimpanan dan mesin pencari dokumen knowledge base
+  # (termasuk vektor embedding), diakses via HTTP di port 9200.
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    environment:
+      # Jalankan sebagai cluster satu node (cukup untuk development, tanpa proses pemilihan master).
+      - discovery.type=single-node
+      # Matikan plugin security (TLS & autentikasi) agar bisa diakses via HTTP biasa tanpa login;
+      # hanya untuk development, jangan dipakai di production.
+      - plugins.security.disabled=true
+      # Batasi heap JVM ke 512 MB (min = max) agar tidak menghabiskan RAM host.
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Lewati instalasi konfigurasi demo (sertifikat & user demo) karena security dimatikan.
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ports:
+      - '9200:9200'  # REST API OpenSearch
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data  # persist index & dokumen antar restart
+
+  # OpenSearch Dashboards: UI web untuk melihat index & dokumen di OpenSearch
+  # (http://localhost:5601). Hanya alat bantu visual, tidak dipanggil kode Python NALA,
+  # dan tidak butuh volume karena seluruh datanya tersimpan di service opensearch.
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    environment:
+      # Alamat OpenSearch via hostname service dalam network compose (format array JSON).
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      # Matikan plugin security Dashboards agar sejalan dengan plugins.security.disabled
+      # di service opensearch (tanpa login); hanya untuk development.
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - '5601:5601'  # UI web Dashboards
+    depends_on:
+      - opensearch
+
+  # Service FastAPI (NALA) yang menyajikan UI chat, memanggil Ollama,
+  # dan mengakses OpenSearch untuk knowledge base.
+  api:
+    # Image dibangun dari app/Dockerfile dengan folder app/ sebagai build context.
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  # UI chat & API NALA (uvicorn)
+    environment:
+      # Arahkan ke hostname service "ollama" dalam network compose, bukan localhost.
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Model LLM untuk chat (/chat/stream) dan agent (/chat); dibaca OllamaClient & build_agent().
+      # qwen2.5:7b dipilih karena lebih andal untuk tool calling dibanding llama3.2:3b
+      # (model harus sudah di-pull: docker compose exec ollama ollama pull qwen2.5:7b).
+      - OLLAMA_MODEL=qwen2.5:7b
+      # Lokasi folder dokumen knowledge base (.md/.txt/.pdf) di dalam container,
+      # di-mount dari ./app/knowledge-base (lihat volumes di bawah).
+      - KNOWLEDGE_BASE_DIR=/code/app/knowledge-base
+      # Arahkan ke hostname service "opensearch" dalam network compose, bukan localhost;
+      # dibaca main.py dan ingest.py untuk membuat VectorStore (retrieval & ingest).
+      - OPENSEARCH_BASE_URL=http://opensearch:9200
+      # Lokasi cache HuggingFace (model cross-encoder reranker); diarahkan ke volume
+      # hf_cache agar model tidak diunduh ulang setiap container di-rebuild.
+      - HF_HOME=/app/.cache/huggingface
+      # Kredensial Langfuse (observability): didapat dari UI Langfuse > Settings > API Keys
+      # project NALA. Hanya berlaku untuk instance Langfuse lokal ini; buat key baru bila
+      # project/database Langfuse di-reset.
+      - LANGFUSE_PUBLIC_KEY=pk-lf-18130b20-cc51-401e-846b-b56d6b5eb71d
+      - LANGFUSE_SECRET_KEY=sk-lf-5de3bf93-6db4-427f-b6f5-d32e47cb002c
+      # Hostname service "langfuse" dalam network compose, bukan localhost.
+      - LANGFUSE_HOST=http://langfuse:3000
+      # Koneksi Postgres data operasional (lihat app/db.py) ke hostname service "postgres",
+      # bukan localhost. Dua role terpisah: readonly (SELECT) dan writer (INSERT).
+      # Password = nilai development di db/seed.sql; ganti bersamaan bila password role diubah.
+      - POSTGRES_READONLY_DSN=postgresql://nala_readonly:readonly_dev_only@postgres:5432/nala_operasional
+      - POSTGRES_WRITER_DSN=postgresql://nala_writer:writer_dev_only@postgres:5432/nala_operasional
+      # Role nala_app (INSERT+SELECT audit_log saja) untuk app/audit.py; password = db/seed.sql.
+      - POSTGRES_APP_DSN=postgresql://nala_app:app_dev_only@postgres:5432/nala_operasional
+      # Secret penandatangan cookie sesi login (SessionMiddleware); default hanya untuk development,
+      # set SESSION_SECRET di env host/.env dengan string acak bila di-deploy.
+      - SESSION_SECRET=${SESSION_SECRET:-nala-dev-session-secret-change-me}
+    volumes:
+      # Bind mount folder knowledge base: dokumen hasil upload tersimpan di host (tidak hilang
+      # saat container dibuat ulang) dan folder yang sama dibaca DAG Airflow di bawah.
+      - ./app/knowledge-base:/code/app/knowledge-base
+      - hf_cache:/app/.cache/huggingface  # cache model HuggingFace (lihat HF_HOME)
+    # Urutan start api: ollama & opensearch cukup sudah dijalankan (tidak ditunggu siap),
+    # sedangkan postgres ditunggu sampai healthcheck pg_isready lolos.
+    depends_on:
+      ollama:
+        condition: service_started
+      opensearch:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Worker RQ: menjalankan job di antrian "ingest" (app/jobs.py) di luar proses FastAPI.
+  # Memakai image yang sama dengan api (tanpa Dockerfile kedua); env & volume knowledge base
+  # disamakan dengan api agar path file hasil upload valid juga di dalam worker.
+  worker:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: nala-worker
+    command: rq worker ingest --url redis://redis:6379/0
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OPENSEARCH_BASE_URL=http://opensearch:9200
+      - KNOWLEDGE_BASE_DIR=/code/app/knowledge-base
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./app/knowledge-base:/code/app/knowledge-base
+    # opensearch belum punya healthcheck, jadi cukup service_started (seperti service api).
+    depends_on:
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+      ollama:
+        condition: service_started
+
+  # Apache Airflow (mode standalone: webserver + scheduler + DB SQLite dalam satu container)
+  # untuk menjalankan pipeline ingest knowledge base secara terjadwal lewat DAG.
+  # UI web di http://localhost:8080; password user admin dicetak di log saat start pertama.
+  airflow:
+    image: apache/airflow:2.10.2
+    command: standalone  # jalankan semua komponen Airflow dalam satu proses (khusus development)
+    environment:
+      # Jangan muat DAG contoh bawaan Airflow agar UI hanya berisi DAG NALA.
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      # Folder tempat Airflow memindai file DAG (di-mount dari ./airflow/dags di bawah).
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      # Hostname service dalam network compose, sama seperti service api.
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OPENSEARCH_BASE_URL=http://opensearch:9200
+      # Dependency modul app/ (ingest.py) yang tidak ada di image Airflow; dipasang via pip
+      # setiap container start. Tanpa ini task DAG gagal dengan ModuleNotFoundError.
+      - _PIP_ADDITIONAL_REQUIREMENTS=pypdf==5.1.0 httpx==0.27.2
+    ports:
+      - "8080:8080"  # UI web Airflow
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags  # file DAG
+      # Kode NALA di-mount ke dalam folder DAG (yang ada di sys.path Airflow),
+      # sehingga DAG bisa `from app.ingest import ...` tanpa menyalin kode.
+      - ./app:/opt/airflow/dags/app
+      # Folder knowledge base yang sama dengan service api, sehingga DAG meng-ingest dokumen hasil upload.
+      - ./app/knowledge-base:/opt/airflow/knowledge-base
+    # Start airflow setelah container opensearch dan ollama dijalankan
+    # (hanya urutan start, tidak menunggu service benar-benar siap menerima request).
+    depends_on:
+      - opensearch
+      - ollama
+
+  # PostgreSQL khusus metadata Langfuse (trace, project, user). Sengaja terpisah dari
+  # database data operasional NALA agar observability tidak bercampur dengan data aplikasi.
+  langfuse-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse  # hanya untuk development lokal; ganti bila di-deploy
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data  # persist trace & konfigurasi Langfuse
+    # Tidak diekspos ke host: hanya diakses service langfuse lewat network compose.
+
+  # Langfuse v2: UI observability LLM (trace retrieval, rerank, dan generate) di
+  # http://localhost:3000. Versi 2 dipilih karena cukup Postgres; v3 butuh ClickHouse,
+  # Redis, dan object storage yang terlalu berat bersama Ollama/OpenSearch/Airflow.
+  langfuse:
+    image: langfuse/langfuse:2
+    environment:
+      # Koneksi ke service langfuse-db lewat hostname dalam network compose.
+      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      # URL publik UI Langfuse (dipakai NextAuth untuk redirect login).
+      - NEXTAUTH_URL=http://localhost:3000
+      # PLACEHOLDER — WAJIB diganti dengan string acak, mis. hasil `openssl rand -base64 32`.
+      # NEXTAUTH_SECRET menandatangani session login; SALT meng-hash API key yang disimpan.
+      - NEXTAUTH_SECRET=GANTI_DENGAN_STRING_ACAK_NEXTAUTH_SECRET
+      - SALT=GANTI_DENGAN_STRING_ACAK_SALT
+    ports:
+      - "3000:3000"  # UI web & API ingest Langfuse
+    # Start langfuse setelah container langfuse-db dijalankan
+    # (hanya urutan start, tidak menunggu Postgres benar-benar siap menerima koneksi).
+    depends_on:
+      - langfuse-db
+
+  # PostgreSQL untuk data operasional NALA (data terstruktur), terpisah dari OpenSearch
+  # (knowledge base/vektor) dan dari langfuse-db (observability).
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=nala_operasional
+      - POSTGRES_USER=nala_admin
+      # Diambil dari env var host/.env; default hanya untuk development lokal.
+      - POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD:-changeme_dev_only}
+    ports:
+      - "5432:5432"  # akses dari host (psql, DBeaver, dsb.)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # persist data antar restart
+      # Skrip seed dijalankan otomatis HANYA saat inisialisasi pertama (volume data masih kosong).
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/01-seed.sql
+    # Dipakai depends_on service api (condition: service_healthy) agar api baru start
+    # setelah Postgres siap menerima koneksi.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nala_admin -d nala_operasional"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis untuk cache dan antrian job (Module 28). Sengaja tanpa volume: data cache & queue
+  # boleh hilang saat restart. Memori dibatasi 256 MB; saat penuh, key yang paling lama tidak
+  # dipakai dibuang (allkeys-lru) agar Redis tidak kehabisan memori.
+  redis:
+    image: redis:7-alpine
+    container_name: nala-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"  # akses dari host (redis-cli, debugging)
+    # Dipakai depends_on service api (condition: service_healthy).
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # RedisInsight: dashboard web untuk memantau Redis NALA (key cache nala:answer:*, counter
+  # rate limit nala:ratelimit:*, antrian RQ rq:*, memori, hit/miss, dsb.) di http://localhost:5540.
+  # Koneksi ke service redis sudah dikonfigurasi lewat env RI_REDIS_*, jadi database langsung
+  # muncul tanpa ditambahkan manual. Hanya alat bantu development.
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: nala-redisinsight
+    environment:
+      - RI_ACCEPT_TERMS_AND_CONDITIONS=true  # lewati dialog EULA saat pertama dibuka
+      - RI_REDIS_HOST=redis                  # hostname service redis dalam network compose
+      - RI_REDIS_PORT=6379
+      - RI_REDIS_ALIAS=NALA Redis
+    ports:
+      - "5540:5540"  # UI web RedisInsight
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Adminer: GUI web ringan untuk melihat/menjalankan query di database Postgres
+  # (http://localhost:8081; login dengan System=PostgreSQL, Server=postgres).
+  # Port host 8081 karena 8080 sudah dipakai Airflow. Hanya alat bantu development.
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8081:8080"  # UI web Adminer (host:container)
+    depends_on:
+      - postgres
+
+# Named volume untuk menyimpan data persisten di luar container.
+volumes:
+  ollama_data:      # model Ollama
+  opensearch_data:  # index dan dokumen OpenSearch
+  hf_cache:         # model HuggingFace untuk reranker (service api)
+  langfuse_db_data: # database Postgres milik Langfuse (trace & konfigurasi)
+  postgres_data:    # database Postgres data operasional NALA

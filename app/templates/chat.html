@@ -1,0 +1,343 @@
+<!-- app/templates/chat.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <!-- Lebar tampilan mengikuti layar perangkat agar layout responsif di ponsel -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NALA</title>
+    <!-- Favicon dan stylesheet disajikan dari mount /static di main.py -->
+    <link rel="icon" href="/static/NALA_Logov2.jpg" type="image/jpeg">
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Render Markdown balasan NALA (tabel, list, heading, kode) dan sanitasi HTML-nya.
+         Disajikan lokal dari /static/vendor agar tetap jalan di jaringan tanpa akses internet. -->
+    <script src="/static/vendor/marked.umd.js"></script>
+    <script src="/static/vendor/purify.min.js"></script>
+    <style>
+        /* Grup checkbox metode pencarian: hilangkan bingkai bawaan fieldset dan
+           jajarkan legend + dua switch dalam satu baris di composer. */
+        .composer-actions {
+            flex-wrap: wrap;
+        }
+
+        .search-method-select {
+            display: inline-flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 2px;
+            min-width: 0;
+            margin: 0;
+            padding: 0;
+            border: none;
+        }
+
+        /* Switch agent adalah item terakhir sebelum tombol kirim; margin kanan auto mendorong
+           tombol kirim tetap di kanan */
+        .agent-toggle {
+            margin-right: auto;
+        }
+
+        /* Switch retrieval yang di-disable (saat mode agent aktif) diredupkan agar jelas tidak berlaku */
+        .rag-toggle:has(input:disabled),
+        .search-method-select:has(input:disabled) legend {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .search-method-select legend {
+            float: left; /* legend ikut sejajar sebagai item baris, bukan di atas bingkai */
+            padding: 0 4px 0 0;
+            color: #8a7f7d;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Top bar: brand, navigasi, jumlah pesan, dan tombol reset percakapan -->
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-logo" aria-hidden="true"></span>
+                <div class="brand-text">
+                    <h1>NALA</h1>
+                    <p class="tagline">Not Another Lowkey Assistant</p>
+                </div>
+            </div>
+            <nav><a href="/" class="active">Chat</a> | <a href="/upload">Knowledge Base</a> | <a href="/data-operasional">Data Operasional</a></nav>
+            <!-- Identitas user yang sedang login (dari sesi) + tautan logout -->
+            {% if user %}<span class="user-banner">Masuk sebagai <b>{{ user.nama }}</b> [{{ user.role_label }}] · <a href="/logout">Logout</a></span>{% endif %}
+            <div class="chat-meta">
+                <span id="message-count">0 pesan</span>
+                <button id="reset-btn" type="button" title="Reset percakapan">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 4v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>Reset</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Area percakapan (scrollable); tampilan sambutan muncul saat kosong -->
+        <div id="history"></div>
+
+        <!-- Composer: kotak input pesan, switch RAG, pilihan metode pencarian, dan tombol kirim -->
+        <footer class="composer">
+            <span id="windowing-note" hidden>Hanya 10 pesan terakhir yang dikirim sebagai konteks ke NALA.</span>
+            <form id="chat-form">
+                <input type="text" id="message" placeholder="Tanya NALA dong.." autocomplete="off" required>
+                <div class="composer-actions">
+                    <!-- Switch RAG: jika dicentang, NALA mencari konteks dari dokumen knowledge base. -->
+                    <label for="useRagToggle" class="rag-toggle">
+                        <input type="checkbox" id="useRagToggle" checked>
+                        Pakai RAG (cari dari dokumen)
+                    </label>
+                    <!-- Metode pencarian dokumen (berlaku saat RAG aktif): BM25 = cocokkan kata kunci,
+                         Vector = cocokkan makna lewat embedding, keduanya = Hybrid (RRF).
+                         Dipetakan ke field search_method. -->
+                    <fieldset class="search-method-select">
+                        <legend>Metode pencarian (centang keduanya = Hybrid):</legend>
+                        <label for="bm25Toggle" class="rag-toggle">
+                            <input type="checkbox" id="bm25Toggle" checked>
+                            BM25 (kata kunci)
+                        </label>
+                        <label for="vectorToggle" class="rag-toggle">
+                            <input type="checkbox" id="vectorToggle" checked>
+                            Vector (makna)
+                        </label>
+                    </fieldset>
+                    <!-- Switch reranking (independen dari metode pencarian): jika dicentang, kandidat hasil
+                         pencarian diurutkan ulang dengan cross-encoder sebelum dijadikan konteks. -->
+                    <label for="useRerankingToggle" class="rag-toggle rerank-toggle">
+                        <input type="checkbox" id="useRerankingToggle" checked>
+                        Rerank hasil (cross-encoder)
+                    </label>
+                    <!-- Mode agent: pertanyaan dikirim ke POST /chat (non-streaming); agent memilih sendiri
+                         tool pencarian dokumen SOP atau query data operasional, jadi switch retrieval di atas
+                         di-disable selama mode ini aktif. -->
+                    <label for="agentModeToggle" class="rag-toggle agent-toggle">
+                        <input type="checkbox" id="agentModeToggle">
+                        Pakai Agent (RAG + SQL tool)
+                    </label>
+                    <button type="submit" title="Kirim">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span class="sr-only">Kirim</span>
+                    </button>
+                </div>
+            </form>
+            <p class="disclaimer">NALA bisa keliru. Untuk prosedur resmi, selalu cek kembali ke SOP internal.</p>
+        </footer>
+    </div>
+    <script>
+        // Riwayat percakapan (role + content) yang dikirim ke backend setiap request,
+        // supaya model punya konteks dari pesan-pesan sebelumnya.
+        let conversation = [];
+
+        // Referensi elemen DOM yang dipakai berulang kali.
+        const form = document.getElementById("chat-form");
+        const history = document.getElementById("history");
+        const input = document.getElementById("message");
+        const submitBtn = form.querySelector("button[type=submit]");
+        const messageCountEl = document.getElementById("message-count");
+        const windowingNoteEl = document.getElementById("windowing-note");
+        const resetBtn = document.getElementById("reset-btn");
+        const useRagToggle = document.getElementById("useRagToggle");
+        const bm25Toggle = document.getElementById("bm25Toggle");
+        const vectorToggle = document.getElementById("vectorToggle");
+        const useRerankingToggle = document.getElementById("useRerankingToggle");
+        const agentModeToggle = document.getElementById("agentModeToggle");
+
+        // Mode agent memutuskan retrieval sendiri lewat tool (hybrid + rerank di dalam rag_search),
+        // jadi switch retrieval /chat/stream di-disable (bukan dihapus) selama mode agent aktif.
+        agentModeToggle.addEventListener("change", () => {
+            for (const toggle of [useRagToggle, bm25Toggle, vectorToggle, useRerankingToggle]) {
+                toggle.disabled = agentModeToggle.checked;
+            }
+        });
+
+        // Perbarui jumlah pesan dan tampilkan catatan windowing setelah histori cukup panjang
+        // (menandakan sebagian pesan lama sudah tidak dikirim sebagai konteks, lihat HISTORY_WINDOW di main.py).
+        function updateMeta() {
+            const count = conversation.length;
+            messageCountEl.textContent = `${count} pesan`;
+            // Pesan berikutnya membuat total > 10 (HISTORY_WINDOW), sehingga pesan terlama mulai terpotong.
+            windowingNoteEl.hidden = count < 10;
+        }
+
+        // Escape teks user/model sebelum disisipkan ke innerHTML, untuk mencegah XSS.
+        function escapeHtml(text) {
+            const div = document.createElement("div");
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Renderer Markdown hanya dipakai bila kedua library berhasil dimuat; bila gagal
+        // (mis. file vendor tidak tersaji), balasan tetap tampil sebagai teks aman.
+        const markdownReady = typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined";
+        if (markdownReady) {
+            // GFM = tabel, strikethrough, autolink; breaks = baris baru tunggal jadi <br>
+            // (model sering memakai satu baris baru, mis. pada pantun).
+            marked.setOptions({ gfm: true, breaks: true });
+            // Link dari model dibuka di tab baru tanpa akses ke window.opener.
+            DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+                if (node.tagName === "A") {
+                    node.setAttribute("target", "_blank");
+                    node.setAttribute("rel", "noopener noreferrer");
+                }
+            });
+        }
+
+        // Whitelist elemen hasil Markdown yang boleh tampil. Selain ini (script, iframe, form,
+        // img, style, atribut event on*) dibuang DOMPurify; img sengaja tidak diizinkan agar
+        // balasan model tidak bisa memuat gambar dari server luar.
+        const SANITIZE_CONFIG = {
+            ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "hr",
+                "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "a",
+                "table", "thead", "tbody", "tr", "th", "td"],
+            ALLOWED_ATTR: ["href", "title", "align", "start"],
+        };
+
+        // Ubah teks Markdown balasan model menjadi HTML. marked TIDAK meng-escape HTML mentah
+        // dari model, jadi hasilnya WAJIB disanitasi DOMPurify sebelum masuk innerHTML (cegah XSS).
+        function formatReply(text) {
+            if (!markdownReady) {
+                return escapeHtml(text).replace(/\n/g, "<br>");
+            }
+            return DOMPurify.sanitize(marked.parse(text), SANITIZE_CONFIG);
+        }
+
+        // Badge sumber jawaban mode agent, dari field tool_used response /chat. Isinya teks tetap
+        // (bukan dari model/user), jadi aman disisipkan ke innerHTML; nilai tak dikenal/"none" -> tanpa badge.
+        function toolBadgeHtml(tool) {
+            const badges = {
+                rag: '<span class="tool-badge tool-rag">📄 Dokumen SOP</span>',
+                sql: '<span class="tool-badge tool-sql">🗄️ Data operasional</span>',
+                cache: '<span class="tool-badge tool-cache">⚡ Dari cache</span>',
+            };
+            const html = tool === "mixed" ? badges.rag + badges.sql : badges[tool] || "";
+            return html ? `<div class="tool-badges">${html}</div>` : "";
+        }
+
+        // Lampiran dokumen sumber jawaban mode agent (field sources response /chat). Nama file berasal
+        // dari upload user, jadi WAJIB di-escape sebelum masuk innerHTML (cegah XSS).
+        function sourcesHtml(sources) {
+            if (!sources || sources.length === 0) return "";
+            const items = sources.map((name) => `<li>${escapeHtml(name)}</li>`).join("");
+            return `<div class="sources"><div class="sources-title">Sumber dokumen</div><ul>${items}</ul></div>`;
+        }
+
+        // Buat satu baris pesan <div class="msg-row user|nala"><div class="bubble"></div></div> di akhir
+        // #history, lalu kembalikan BUBBLE-nya (bukan .msg-row) supaya pemanggil langsung mengisi isinya.
+        function addRow(who) {
+            const row = document.createElement("div");
+            row.className = `msg-row ${who}`;
+            const bubble = document.createElement("div");
+            bubble.className = "bubble";
+            row.appendChild(bubble);
+            history.appendChild(row);
+            history.scrollTop = history.scrollHeight;
+            return bubble;
+        }
+
+        // Kirim pesan: tampilkan pesan user, minta balasan dari backend (streaming /chat/stream,
+        // atau sekaligus dari agent /chat bila mode agent aktif), lalu render balasan NALA.
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault(); // cegah reload halaman (submit form bawaan browser)
+            const message = input.value;
+            input.value = "";
+            const agentMode = document.getElementById("agentModeToggle").checked;
+            // Baca status switch RAG saat pesan dikirim (bisa diubah user kapan saja).
+            const useRag = useRagToggle.checked;
+            // Petakan checkbox metode pencarian ke search_method: hanya BM25 → "bm25",
+            // hanya Vector → "vector"; keduanya dicentang atau keduanya kosong → default "hybrid".
+            const bm25On = bm25Toggle.checked;
+            const vectorOn = vectorToggle.checked;
+            let searchMethod = "hybrid";
+            if (bm25On && !vectorOn) searchMethod = "bm25";
+            else if (vectorOn && !bm25On) searchMethod = "vector";
+            // Reranking independen dari metode pencarian; server tetap bisa mematikannya (RERANK_ENABLED).
+            const useReranking = useRerankingToggle.checked;
+
+            // Tampilkan pesan user langsung dan simpan ke riwayat percakapan.
+            conversation.push({ role: "user", content: message });
+            // textContent (bukan innerHTML): teks user tidak pernah ditafsirkan sebagai HTML.
+            addRow("user").textContent = message;
+
+            // Siapkan SATU bubble balasan NALA berisi indikator "sedang mengetik"; potongan stream
+            // pertama menimpa indikator ini, dan bubble yang sama dipakai ulang sampai balasan selesai.
+            const replyEl = addRow("nala");
+            replyEl.innerHTML = `<span class="typing typing-indicator"><span></span><span></span><span></span></span>`;
+
+            // Kunci input & tombol selama menunggu balasan agar tidak terkirim dobel.
+            submitBtn.disabled = true;
+            input.disabled = true;
+
+            try {
+                let fullReply = "";
+
+                if (agentMode) {
+                    // Mode agent: POST /chat tanpa streaming. history = semua pesan sebelumnya, TANPA
+                    // pesan baru ini (sudah dikirim terpisah sebagai message); indikator "sedang mengetik"
+                    // tetap tampil sampai agent selesai memanggil tool dan menyusun jawaban.
+                    const response = await fetch("/chat", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ message, history: conversation.slice(0, -1) }),
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    fullReply = data.reply;
+                    // Balasan ditampilkan sekaligus, diikuti badge tool yang dipakai agent.
+                    replyEl.innerHTML = `${formatReply(fullReply)}${sourcesHtml(data.sources)}${toolBadgeHtml(data.tool_used)}`;
+                    history.scrollTop = history.scrollHeight;
+                } else {
+                    // Kirim seluruh riwayat percakapan (plus pilihan RAG, metode pencarian, & reranking) ke endpoint streaming backend.
+                    const response = await fetch("/chat/stream", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            messages: conversation,
+                            use_rag: useRag,
+                            search_method: searchMethod,
+                            use_reranking: useReranking,
+                        }),
+                    });
+                    // fetch hanya gagal untuk error jaringan; status HTTP error (mis. 400/500) dilempar manual.
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                    // Baca response body sebagai stream teks dan render setiap potongan begitu diterima.
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder(); // ubah byte (Uint8Array) menjadi teks UTF-8
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break; // stream selesai
+                        // stream: true agar karakter multi-byte yang terpotong antar-chunk tidak rusak.
+                        fullReply += decoder.decode(value, { stream: true });
+                        // Render ulang seluruh balasan agar format markdown yang baru lengkap ikut diterapkan.
+                        replyEl.innerHTML = formatReply(fullReply);
+                        history.scrollTop = history.scrollHeight;
+                    }
+                }
+
+                // Simpan balasan lengkap ke riwayat setelah balasan selesai.
+                conversation.push({ role: "assistant", content: fullReply });
+                updateMeta();
+            } catch (err) {
+                // Tampilkan pesan error di tempat balasan; pesan user tetap ada di riwayat.
+                replyEl.innerHTML = `<span class="error">Gagal mendapatkan balasan (${escapeHtml(err.message)}). Coba lagi.</span>`;
+            } finally {
+                // Buka kembali input, baik request berhasil maupun gagal.
+                submitBtn.disabled = false;
+                input.disabled = false;
+                input.focus();
+            }
+        });
+
+        // Kosongkan riwayat percakapan dan tampilan setelah dikonfirmasi user.
+        resetBtn.addEventListener("click", () => {
+            if (!confirm("Reset percakapan?")) return;
+            conversation = [];
+            history.innerHTML = "";
+            updateMeta();
+        });
+    </script>
+</body>
+</html>
